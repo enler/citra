@@ -1,41 +1,100 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common.h"
-#include "common/log_manager.h"
-#include "common/file_util.h"
+#include <string>
+#include <thread>
+#include <iostream>
 
+// This needs to be included before getopt.h because the latter #defines symbols used by it
+#include "common/microprofile.h"
+
+#ifdef _MSC_VER
+#include <getopt.h>
+#else
+#include <unistd.h>
+#include <getopt.h>
+#endif
+
+#include "common/logging/log.h"
+#include "common/logging/backend.h"
+#include "common/logging/filter.h"
+
+#include "core/settings.h"
 #include "core/system.h"
 #include "core/core.h"
 #include "core/loader/loader.h"
 
+#include "citra/config.h"
 #include "citra/emu_window/emu_window_glfw.h"
 
-/// Application entry point
-int __cdecl main(int argc, char **argv) {
-    LogManager::Init();
+#include "video_core/video_core.h"
 
-    if (argc < 2) {
-        ERROR_LOG(BOOT, "Failed to load ROM: No ROM specified");
+
+static void PrintHelp()
+{
+    std::cout << "Usage: citra <filename>" << std::endl;
+}
+
+/// Application entry point
+int main(int argc, char **argv) {
+    int option_index = 0;
+    std::string boot_filename;
+    static struct option long_options[] = {
+        { "help", no_argument, 0, 'h' },
+        { 0, 0, 0, 0 }
+    };
+
+    while (optind < argc) {
+        char arg = getopt_long(argc, argv, ":h", long_options, &option_index);
+        if (arg != -1) {
+            switch (arg) {
+            case 'h':
+                PrintHelp();
+                return 0;
+            }
+        } else {
+            boot_filename = argv[optind];
+            optind++;
+        }
+    }
+
+    Log::Filter log_filter(Log::Level::Debug);
+    Log::SetFilter(&log_filter);
+
+    MicroProfileOnThreadCreate("EmuThread");
+
+    if (boot_filename.empty()) {
+        LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");
         return -1;
     }
 
-    std::string boot_filename = argv[1];
+    Config config;
+    log_filter.ParseFilterString(Settings::values.log_filter);
+
+
     EmuWindow_GLFW* emu_window = new EmuWindow_GLFW;
+
+    VideoCore::g_hw_renderer_enabled = Settings::values.use_hw_renderer;
+    VideoCore::g_shader_jit_enabled = Settings::values.use_shader_jit;
 
     System::Init(emu_window);
 
-    if (Loader::ResultStatus::Success != Loader::LoadFile(boot_filename)) {
-        ERROR_LOG(BOOT, "Failed to load ROM!");
+    Loader::ResultStatus load_result = Loader::LoadFile(boot_filename);
+    if (Loader::ResultStatus::Success != load_result) {
+        LOG_CRITICAL(Frontend, "Failed to load ROM (Error %i)!", load_result);
         return -1;
     }
 
-    while(true) {
+    while (emu_window->IsOpen()) {
         Core::RunLoop();
     }
 
+    System::Shutdown();
+
     delete emu_window;
+
+    MicroProfileShutdown();
 
     return 0;
 }

@@ -1,3 +1,7 @@
+// Copyright 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
+
 #include <QPushButton>
 #include <QStyle>
 #include <QGridLayout>
@@ -5,7 +9,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 
-#include "controller_config_util.hxx"
+#include "controller_config_util.h"
 
 /* TODO(bunnei): ImplementMe
 GStickConfig::GStickConfig(common::Config::Control leftid, common::Config::Control rightid, common::Config::Control upid, common::Config::Control downid, QObject* change_receiver, QWidget* parent) : QWidget(parent)
@@ -48,7 +52,7 @@ void GKeyConfigButton::OnActivePortChanged(const common::Config::ControllerPort&
     else if (config.keys.key_code[id] == Qt::Key_Control) text = tr("Control");
     else if (config.keys.key_code[id] == Qt::Key_Alt) text = tr("Alt");
     else if (config.keys.key_code[id] == Qt::Key_Meta) text = tr("Meta");
-	setText(text);
+    setText(text);
 }
 
 void GKeyConfigButton::OnClicked()

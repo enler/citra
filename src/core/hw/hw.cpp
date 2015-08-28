@@ -1,74 +1,71 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include "common/common_types.h"
+#include "common/logging/log.h"
 
 #include "core/hw/hw.h"
 #include "core/hw/gpu.h"
-#include "core/hw/ndma.h"
+#include "core/hw/lcd.h"
 
 namespace HW {
-
-enum {
-    VADDR_HASH      = 0x1EC01000,
-    VADDR_CSND      = 0x1EC03000,
-    VADDR_DSP       = 0x1EC40000,
-    VADDR_PDN       = 0x1EC41000,
-    VADDR_CODEC     = 0x1EC41000,
-    VADDR_SPI       = 0x1EC42000,
-    VADDR_SPI_2     = 0x1EC43000,   // Only used under TWL_FIRM?
-    VADDR_I2C       = 0x1EC44000,
-    VADDR_CODEC_2   = 0x1EC45000,
-    VADDR_HID       = 0x1EC46000,
-    VADDR_PAD       = 0x1EC46000,
-    VADDR_PTM       = 0x1EC46000,
-    VADDR_GPIO      = 0x1EC47000,
-    VADDR_I2C_2     = 0x1EC48000,
-    VADDR_SPI_3     = 0x1EC60000,
-    VADDR_I2C_3     = 0x1EC61000,
-    VADDR_MIC       = 0x1EC62000,
-    VADDR_PXI       = 0x1EC63000,   // 0xFFFD2000
-    //VADDR_NTRCARD
-    VADDR_CDMA      = 0xFFFDA000,   // CoreLink DMA-330? Info
-    VADDR_DSP_2     = 0x1ED03000,
-    VADDR_HASH_2    = 0x1EE01000,
-    VADDR_GPU       = 0x1EF00000,
-};
 
 template <typename T>
 inline void Read(T &var, const u32 addr) {
     switch (addr & 0xFFFFF000) {
-    
-    // TODO(bunnei): What is the virtual address of NDMA?
-    // case VADDR_NDMA:
-    //     NDMA::Read(var, addr);
-    //     break;
-
     case VADDR_GPU:
+    case VADDR_GPU + 0x1000:
+    case VADDR_GPU + 0x2000:
+    case VADDR_GPU + 0x3000:
+    case VADDR_GPU + 0x4000:
+    case VADDR_GPU + 0x5000:
+    case VADDR_GPU + 0x6000:
+    case VADDR_GPU + 0x7000:
+    case VADDR_GPU + 0x8000:
+    case VADDR_GPU + 0x9000:
+    case VADDR_GPU + 0xA000:
+    case VADDR_GPU + 0xB000:
+    case VADDR_GPU + 0xC000:
+    case VADDR_GPU + 0xD000:
+    case VADDR_GPU + 0xE000:
+    case VADDR_GPU + 0xF000:
         GPU::Read(var, addr);
         break;
-
+    case VADDR_LCD:
+        LCD::Read(var, addr);
+        break;
     default:
-        ERROR_LOG(HW, "unknown Read%d @ 0x%08X", sizeof(var) * 8, addr);
+        LOG_ERROR(HW_Memory, "unknown Read%lu @ 0x%08X", sizeof(var) * 8, addr);
     }
 }
 
 template <typename T>
 inline void Write(u32 addr, const T data) {
     switch (addr & 0xFFFFF000) {
-    
-    // TODO(bunnei): What is the virtual address of NDMA?
-    // case VADDR_NDMA 
-    //     NDMA::Write(addr, data);
-    //     break;
-
     case VADDR_GPU:
+    case VADDR_GPU + 0x1000:
+    case VADDR_GPU + 0x2000:
+    case VADDR_GPU + 0x3000:
+    case VADDR_GPU + 0x4000:
+    case VADDR_GPU + 0x5000:
+    case VADDR_GPU + 0x6000:
+    case VADDR_GPU + 0x7000:
+    case VADDR_GPU + 0x8000:
+    case VADDR_GPU + 0x9000:
+    case VADDR_GPU + 0xA000:
+    case VADDR_GPU + 0xB000:
+    case VADDR_GPU + 0xC000:
+    case VADDR_GPU + 0xD000:
+    case VADDR_GPU + 0xE000:
+    case VADDR_GPU + 0xF000:
         GPU::Write(addr, data);
         break;
-
+    case VADDR_LCD:
+        LCD::Write(addr, data);
+        break;
     default:
-        ERROR_LOG(HW, "unknown Write%d 0x%08X @ 0x%08X", sizeof(data) * 8, data, addr);
+        LOG_ERROR(HW_Memory, "unknown Write%lu 0x%08X @ 0x%08X", sizeof(data) * 8, (u32)data, addr);
     }
 }
 
@@ -86,20 +83,20 @@ template void Write<u8>(u32 addr, const u8 data);
 
 /// Update hardware
 void Update() {
-    GPU::Update();
-    NDMA::Update();
 }
 
 /// Initialize hardware
 void Init() {
     GPU::Init();
-    NDMA::Init();
-    NOTICE_LOG(HW, "initialized OK");
+    LCD::Init();
+    LOG_DEBUG(HW, "initialized OK");
 }
 
 /// Shutdown hardware
 void Shutdown() {
-    NOTICE_LOG(HW, "shutdown OK");
+    GPU::Shutdown();
+    LCD::Shutdown();
+    LOG_DEBUG(HW, "shutdown OK");
 }
 
 }

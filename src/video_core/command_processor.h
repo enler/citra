@@ -1,13 +1,13 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
+#include <type_traits>
+
 #include "common/bit_field.h"
 #include "common/common_types.h"
-
-#include "pica.h"
 
 namespace Pica {
 

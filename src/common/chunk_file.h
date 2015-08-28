@@ -26,16 +26,19 @@
 // - Zero backwards/forwards compatibility
 // - Serialization code for anything complex has to be manually written.
 
-#include <map>
-#include <vector>
+#include <cstring>
 #include <deque>
-#include <string>
 #include <list>
+#include <map>
 #include <set>
+#include <string>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
-#include "common/common.h"
-#include "common/file_util.h"
+#include "common/assert.h"
+#include "common/common_types.h"
+#include "common/logging/log.h"
 
 template <class T>
 struct LinkedListItem : public T
@@ -51,7 +54,7 @@ public:
     PointerWrapSection(PointerWrap &p, int ver, const char *title) : p_(p), ver_(ver), title_(title) {
     }
     ~PointerWrapSection();
-    
+
     bool operator == (const int &v) const { return ver_ == v; }
     bool operator != (const int &v) const { return ver_ != v; }
     bool operator <= (const int &v) const { return ver_ <= v; }
@@ -154,7 +157,7 @@ public:
             Do(foundVersion);
 
         if (error == ERROR_FAILURE || foundVersion < minVer || foundVersion > ver) {
-            WARN_LOG(COMMON, "Savestate failure: wrong version %d found for %s", foundVersion, title);
+            LOG_ERROR(Common, "Savestate failure: wrong version %d found for %s", foundVersion, title);
             SetError(ERROR_FAILURE);
             return PointerWrapSection(*this, -1, title);
         }
@@ -178,7 +181,14 @@ public:
         case MODE_READ:    if (memcmp(data, *ptr, size) != 0) return false; break;
         case MODE_WRITE: memcpy(*ptr, data, size); break;
         case MODE_MEASURE: break;  // MODE_MEASURE - don't need to do anything
-        case MODE_VERIFY: for(int i = 0; i < size; i++) _dbg_assert_msg_(COMMON, ((u8*)data)[i] == (*ptr)[i], "Savestate verification failure: %d (0x%X) (at %p) != %d (0x%X) (at %p).\n", ((u8*)data)[i], ((u8*)data)[i], &((u8*)data)[i], (*ptr)[i], (*ptr)[i], &(*ptr)[i]); break;
+        case MODE_VERIFY:
+            for (int i = 0; i < size; i++) {
+                DEBUG_ASSERT_MSG(((u8*)data)[i] == (*ptr)[i],
+                    "Savestate verification failure: %d (0x%X) (at %p) != %d (0x%X) (at %p).\n",
+                    ((u8*)data)[i], ((u8*)data)[i], &((u8*)data)[i],
+                    (*ptr)[i], (*ptr)[i], &(*ptr)[i]);
+            }
+            break;
         default: break;  // throw an error?
         }
         (*ptr) += size;
@@ -191,12 +201,19 @@ public:
         case MODE_READ:    memcpy(data, *ptr, size); break;
         case MODE_WRITE: memcpy(*ptr, data, size); break;
         case MODE_MEASURE: break;  // MODE_MEASURE - don't need to do anything
-        case MODE_VERIFY: for(int i = 0; i < size; i++) _dbg_assert_msg_(COMMON, ((u8*)data)[i] == (*ptr)[i], "Savestate verification failure: %d (0x%X) (at %p) != %d (0x%X) (at %p).\n", ((u8*)data)[i], ((u8*)data)[i], &((u8*)data)[i], (*ptr)[i], (*ptr)[i], &(*ptr)[i]); break;
+        case MODE_VERIFY:
+            for (int i = 0; i < size; i++) {
+                DEBUG_ASSERT_MSG(((u8*)data)[i] == (*ptr)[i],
+                    "Savestate verification failure: %d (0x%X) (at %p) != %d (0x%X) (at %p).\n",
+                    ((u8*)data)[i], ((u8*)data)[i], &((u8*)data)[i],
+                    (*ptr)[i], (*ptr)[i], &(*ptr)[i]);
+            }
+            break;
         default: break;  // throw an error?
         }
         (*ptr) += size;
     }
-    
+
     template<class K, class T>
     void Do(std::map<K, T *> &x)
     {
@@ -204,11 +221,11 @@ public:
         {
             for (auto it = x.begin(), end = x.end(); it != end; ++it)
             {
-                if (it->second != NULL)
+                if (it->second != nullptr)
                     delete it->second;
             }
         }
-        T *dv = NULL;
+        T *dv = nullptr;
         DoMap(x, dv);
     }
 
@@ -264,11 +281,11 @@ public:
         {
             for (auto it = x.begin(), end = x.end(); it != end; ++it)
             {
-                if (it->second != NULL)
+                if (it->second != nullptr)
                     delete it->second;
             }
         }
-        T *dv = NULL;
+        T *dv = nullptr;
         DoMultimap(x, dv);
     }
 
@@ -320,7 +337,7 @@ public:
     template<class T>
     void Do(std::vector<T *> &x)
     {
-        T *dv = NULL;
+        T *dv = nullptr;
         DoVector(x, dv);
     }
 
@@ -364,12 +381,12 @@ public:
         if (vec_size > 0)
             DoArray(&x[0], vec_size);
     }
-    
+
     // Store deques.
     template<class T>
     void Do(std::deque<T *> &x)
     {
-        T *dv = NULL;
+        T *dv = nullptr;
         DoDeque(x, dv);
     }
 
@@ -395,7 +412,7 @@ public:
     template<class T>
     void Do(std::list<T *> &x)
     {
-        T *dv = NULL;
+        T *dv = nullptr;
         Do(x, dv);
     }
 
@@ -433,7 +450,7 @@ public:
         {
             for (auto it = x.begin(), end = x.end(); it != end; ++it)
             {
-                if (*it != NULL)
+                if (*it != nullptr)
                     delete *it;
             }
         }
@@ -476,26 +493,30 @@ public:
             break;
 
         default:
-            ERROR_LOG(COMMON, "Savestate error: invalid mode %d.", mode);
+            LOG_ERROR(Common, "Savestate error: invalid mode %d.", mode);
         }
     }
 
     // Store strings.
-    void Do(std::string &x) 
+    void Do(std::string &x)
     {
         int stringLen = (int)x.length() + 1;
         Do(stringLen);
-        
+
         switch (mode) {
         case MODE_READ:        x = (char*)*ptr; break;
         case MODE_WRITE:    memcpy(*ptr, x.c_str(), stringLen); break;
         case MODE_MEASURE: break;
-        case MODE_VERIFY: _dbg_assert_msg_(COMMON, !strcmp(x.c_str(), (char*)*ptr), "Savestate verification failure: \"%s\" != \"%s\" (at %p).\n", x.c_str(), (char*)*ptr, ptr); break;
+        case MODE_VERIFY:
+            DEBUG_ASSERT_MSG((x == (char*)*ptr),
+                "Savestate verification failure: \"%s\" != \"%s\" (at %p).\n",
+                x.c_str(), (char*)*ptr, ptr);
+            break;
         }
         (*ptr) += stringLen;
     }
 
-    void Do(std::wstring &x) 
+    void Do(std::wstring &x)
     {
         int stringLen = sizeof(wchar_t)*((int)x.length() + 1);
         Do(stringLen);
@@ -504,7 +525,11 @@ public:
         case MODE_READ:        x = (wchar_t*)*ptr; break;
         case MODE_WRITE:    memcpy(*ptr, x.c_str(), stringLen); break;
         case MODE_MEASURE: break;
-        case MODE_VERIFY: _dbg_assert_msg_(COMMON, x == (wchar_t*)*ptr, "Savestate verification failure: \"%ls\" != \"%ls\" (at %p).\n", x.c_str(), (wchar_t*)*ptr, ptr); break;
+        case MODE_VERIFY:
+            DEBUG_ASSERT_MSG((x == (wchar_t*)*ptr),
+                "Savestate verification failure: \"%ls\" != \"%ls\" (at %p).\n",
+                x.c_str(), (wchar_t*)*ptr, ptr);
+            break;
         }
         (*ptr) += stringLen;
     }
@@ -518,7 +543,7 @@ public:
     void DoClass(T *&x) {
         if (mode == MODE_READ)
         {
-            if (x != NULL)
+            if (x != nullptr)
                 delete x;
             x = new T();
         }
@@ -534,7 +559,7 @@ public:
     void Do(T &x) {
         DoHelper<T>::Do(this, x);
     }
-    
+
     template<class T>
     void DoPOD(T &x) {
         DoHelper<T>::Do(this, x);
@@ -567,7 +592,7 @@ public:
                 {
                     if (mode == MODE_READ)
                     {
-                        cur->next = 0;
+                        cur->next = nullptr;
                         list_cur = cur;
                         if (prev)
                             prev->next = cur;
@@ -586,13 +611,13 @@ public:
                 if (mode == MODE_READ)
                 {
                     if (prev)
-                        prev->next = 0;
+                        prev->next = nullptr;
                     if (list_end)
                         *list_end = prev;
                     if (list_cur)
                     {
                         if (list_start == list_cur)
-                            list_start = 0;
+                            list_start = nullptr;
                         do
                         {
                             LinkedListItem<T>* next = list_cur->next;
@@ -615,7 +640,7 @@ public:
         Do(cookie);
         if(mode == PointerWrap::MODE_READ && cookie != arbitraryNumber)
         {
-            PanicAlertT("Error: After \"%s\", found %d (0x%X) instead of save marker %d (0x%X). Aborting savestate load...", prevName, cookie, cookie, arbitraryNumber, arbitraryNumber);
+            LOG_ERROR(Common, "After \"%s\", found %d (0x%X) instead of save marker %d (0x%X). Aborting savestate load...", prevName, cookie, cookie, arbitraryNumber, arbitraryNumber);
             SetError(ERROR_FAILURE);
         }
     }

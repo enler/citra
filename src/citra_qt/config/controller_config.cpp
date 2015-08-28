@@ -1,7 +1,11 @@
+// Copyright 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
+
 #include <QDialogButtonBox>
 
-#include "controller_config.hxx"
-#include "controller_config_util.hxx"
+#include "controller_config.h"
+#include "controller_config_util.h"
 
 /* TODO(bunnei): ImplementMe
 

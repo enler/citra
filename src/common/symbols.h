@@ -1,12 +1,14 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
 #include <map>
+#include <string>
+#include <utility>
 
-#include "common/common.h"
+#include "common/common_types.h"
 
 struct TSymbol
 {
@@ -33,5 +35,5 @@ namespace Symbols
     const std::string GetName(u32 _address);
     void Remove(u32 _address);
     void Clear();
-};
+}
 

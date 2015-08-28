@@ -1,60 +1,62 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
+#include <array>
 #include <fstream>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
-#include <string.h>
 
-#include "common/common.h"
-#include "common/string_util.h"
+#include "common/common_types.h"
 
 // User directory indices for GetUserPath
 enum {
-	D_USER_IDX,
-	D_ROOT_IDX,
-	D_CONFIG_IDX,
-	D_GAMECONFIG_IDX,
-	D_MAPS_IDX,
-	D_CACHE_IDX,
-	D_SHADERCACHE_IDX,
-	D_SHADERS_IDX,
-	D_STATESAVES_IDX,
-	D_SCREENSHOTS_IDX,
-	D_SDMC_IDX,
-	D_HIRESTEXTURES_IDX,
-	D_DUMP_IDX,
-	D_DUMPFRAMES_IDX,
-	D_DUMPAUDIO_IDX,
-	D_DUMPTEXTURES_IDX,
-	D_DUMPDSP_IDX,
-	D_LOGS_IDX,
-	D_SYSCONF_IDX,
-	F_EMUCONFIG_IDX,
-	F_DEBUGGERCONFIG_IDX,
-	F_LOGGERCONFIG_IDX,
-	F_MAINLOG_IDX,
-	F_RAMDUMP_IDX,
-	F_ARAMDUMP_IDX,
-	F_SYSCONF_IDX,
-	NUM_PATH_INDICES
+    D_USER_IDX,
+    D_ROOT_IDX,
+    D_CONFIG_IDX,
+    D_GAMECONFIG_IDX,
+    D_MAPS_IDX,
+    D_CACHE_IDX,
+    D_SHADERCACHE_IDX,
+    D_SHADERS_IDX,
+    D_STATESAVES_IDX,
+    D_SCREENSHOTS_IDX,
+    D_SDMC_IDX,
+    D_NAND_IDX,
+    D_SYSDATA_IDX,
+    D_HIRESTEXTURES_IDX,
+    D_DUMP_IDX,
+    D_DUMPFRAMES_IDX,
+    D_DUMPAUDIO_IDX,
+    D_DUMPTEXTURES_IDX,
+    D_DUMPDSP_IDX,
+    D_LOGS_IDX,
+    D_SYSCONF_IDX,
+    F_EMUCONFIG_IDX,
+    F_DEBUGGERCONFIG_IDX,
+    F_LOGGERCONFIG_IDX,
+    F_MAINLOG_IDX,
+    F_RAMDUMP_IDX,
+    F_ARAMDUMP_IDX,
+    F_SYSCONF_IDX,
+    NUM_PATH_INDICES
 };
 
 namespace FileUtil
 {
 
-// FileSystem tree node/ 
+// FileSystem tree node/
 struct FSTEntry
 {
-	bool isDirectory;
-	u64 size;						// file length or number of entries from children
-	std::string physicalName;		// name on disk
-	std::string virtualName;		// name in FST names table
-	std::vector<FSTEntry> children;
+    bool isDirectory;
+    u64 size;                       // file length or number of entries from children
+    std::string physicalName;       // name on disk
+    std::string virtualName;        // name in FST names table
+    std::vector<FSTEntry> children;
 };
 
 // Returns true if file filename exists
@@ -85,13 +87,13 @@ bool Delete(const std::string &filename);
 // Deletes a directory filename, returns true on success
 bool DeleteDir(const std::string &filename);
 
-// renames file srcFilename to destFilename, returns true on success 
+// renames file srcFilename to destFilename, returns true on success
 bool Rename(const std::string &srcFilename, const std::string &destFilename);
 
-// copies file srcFilename to destFilename, returns true on success 
+// copies file srcFilename to destFilename, returns true on success
 bool Copy(const std::string &srcFilename, const std::string &destFilename);
 
-// creates an empty file filename, returns true on success 
+// creates an empty file filename, returns true on success
 bool CreateEmptyFile(const std::string &filename);
 
 // Scans the directory tree gets, starting from _Directory and adds the
@@ -110,12 +112,9 @@ void CopyDir(const std::string &source_path, const std::string &dest_path);
 // Set the current directory to given directory
 bool SetCurrentDir(const std::string &directory);
 
-// Returns a pointer to a string with a Dolphin data dir in the user's home
+// Returns a pointer to a string with a Citra data dir in the user's home
 // directory. To be used in "multi-user" mode (that is, installed).
 const std::string& GetUserPath(const unsigned int DirIDX, const std::string &newPath="");
-
-// probably doesn't belong here
-//std::string GetThemeDir(const std::string& theme_name);
 
 // Returns the path to where the sys file are
 std::string GetSysDirectory();
@@ -128,8 +127,18 @@ std::string GetBundleDirectory();
 std::string &GetExeDirectory();
 #endif
 
-bool WriteStringToFile(bool text_file, const std::string &str, const char *filename);
-bool ReadFileToString(bool text_file, const char *filename, std::string &str);
+size_t WriteStringToFile(bool text_file, const std::string &str, const char *filename);
+size_t ReadFileToString(bool text_file, const char *filename, std::string &str);
+
+/**
+ * Splits the filename into 8.3 format
+ * Loosely implemented following https://en.wikipedia.org/wiki/8.3_filename
+ * @param filename The normal filename to use
+ * @param short_name A 9-char array in which the short name will be written
+ * @param extension A 4-char array in which the extension will be written
+ */
+void SplitFilename83(const std::string& filename, std::array<char, 9>& short_name,
+                     std::array<char, 4>& extension);
 
 // simple wrapper for cstdlib file functions to
 // hopefully will make error checking easier
@@ -137,86 +146,96 @@ bool ReadFileToString(bool text_file, const char *filename, std::string &str);
 class IOFile : public NonCopyable
 {
 public:
-	IOFile();
-	IOFile(std::FILE* file);
-	IOFile(const std::string& filename, const char openmode[]);
+    IOFile();
+    IOFile(std::FILE* file);
+    IOFile(const std::string& filename, const char openmode[]);
 
-	~IOFile();
-	
-	IOFile(IOFile&& other);
-	IOFile& operator=(IOFile&& other);
-	
-	void Swap(IOFile& other);
+    ~IOFile();
 
-	bool Open(const std::string& filename, const char openmode[]);
-	bool Close();
+    IOFile(IOFile&& other);
+    IOFile& operator=(IOFile&& other);
 
-	template <typename T>
-	size_t ReadArray(T* data, size_t length)
-	{
-		if (!IsOpen()) {
-			m_good = false;
-			return -1;
-		}
+    void Swap(IOFile& other);
 
-		size_t items_read = std::fread(data, sizeof(T), length, m_file);
-		if (items_read != length)
-			m_good = false;
+    bool Open(const std::string& filename, const char openmode[]);
+    bool Close();
 
-		return items_read;
-	}
+    template <typename T>
+    size_t ReadArray(T* data, size_t length)
+    {
+        if (!IsOpen()) {
+            m_good = false;
+            return -1;
+        }
 
-	template <typename T>
-	size_t WriteArray(const T* data, size_t length)
-	{
-		if (!IsOpen()) {
-			m_good = false;
-			return -1;
-		}
+        size_t items_read = std::fread(data, sizeof(T), length, m_file);
+        if (items_read != length)
+            m_good = false;
 
-		size_t items_written = std::fwrite(data, sizeof(T), length, m_file);
-		if (items_written != length)
-			m_good = false;
+        return items_read;
+    }
 
-		return items_written;
-	}
+    template <typename T>
+    size_t WriteArray(const T* data, size_t length)
+    {
+        static_assert(std::is_standard_layout<T>::value, "Given array does not consist of standard layout objects");
+        // TODO: gcc 4.8 does not support is_trivially_copyable, but we really should check for it here.
+        //static_assert(std::is_trivially_copyable<T>::value, "Given array does not consist of trivially copyable objects");
 
-	size_t ReadBytes(void* data, size_t length)
-	{
-		return ReadArray(reinterpret_cast<char*>(data), length);
-	}
+        if (!IsOpen()) {
+            m_good = false;
+            return -1;
+        }
 
-	size_t WriteBytes(const void* data, size_t length)
-	{
-		return WriteArray(reinterpret_cast<const char*>(data), length);
-	}
+        size_t items_written = std::fwrite(data, sizeof(T), length, m_file);
+        if (items_written != length)
+            m_good = false;
 
-	bool IsOpen() { return NULL != m_file; }
+        return items_written;
+    }
 
-	// m_good is set to false when a read, write or other function fails
-	bool IsGood() {	return m_good; }
-	operator void*() { return m_good ? m_file : NULL; }
+    size_t ReadBytes(void* data, size_t length)
+    {
+        return ReadArray(reinterpret_cast<char*>(data), length);
+    }
 
-	std::FILE* ReleaseHandle();
+    size_t WriteBytes(const void* data, size_t length)
+    {
+        return WriteArray(reinterpret_cast<const char*>(data), length);
+    }
 
-	std::FILE* GetHandle() { return m_file; }
+    template<typename T>
+    size_t WriteObject(const T& object) {
+        static_assert(!std::is_pointer<T>::value, "Given object is a pointer");
+        return WriteArray(&object, 1);
+    }
 
-	void SetHandle(std::FILE* file);
+    bool IsOpen() { return nullptr != m_file; }
 
-	bool Seek(s64 off, int origin);
-	u64 Tell();
-	u64 GetSize();
-	bool Resize(u64 size);
-	bool Flush();
+    // m_good is set to false when a read, write or other function fails
+    bool IsGood() {    return m_good; }
+    operator void*() { return m_good ? m_file : nullptr; }
 
-	// clear error state
-	void Clear() { m_good = true; std::clearerr(m_file); }
+    std::FILE* ReleaseHandle();
 
-	std::FILE* m_file;
-	bool m_good;
+    std::FILE* GetHandle() { return m_file; }
+
+    void SetHandle(std::FILE* file);
+
+    bool Seek(s64 off, int origin);
+    u64 Tell();
+    u64 GetSize();
+    bool Resize(u64 size);
+    bool Flush();
+
+    // clear error state
+    void Clear() { m_good = true; std::clearerr(m_file); }
+
+    std::FILE* m_file;
+    bool m_good;
 private:
-	IOFile(IOFile&);
-	IOFile& operator=(IOFile& other);
+    IOFile(IOFile&);
+    IOFile& operator=(IOFile& other);
 };
 
 }  // namespace
@@ -225,9 +244,9 @@ private:
 template <typename T>
 void OpenFStream(T& fstream, const std::string& filename, std::ios_base::openmode openmode)
 {
-#ifdef _WIN32
-	fstream.open(Common::UTF8ToTStr(filename).c_str(), openmode);
+#ifdef _MSC_VER
+    fstream.open(Common::UTF8ToTStr(filename).c_str(), openmode);
 #else
-	fstream.open(filename.c_str(), openmode);
+    fstream.open(filename.c_str(), openmode);
 #endif
 }

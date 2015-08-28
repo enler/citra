@@ -1,17 +1,25 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2015 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include "common/common.h"
+#include "common/common_types.h"
 
-u32 HashFletcher(const u8* data_u8, size_t length);  // FAST. Length & 1 == 0.
-u32 HashAdler32(const u8* data, size_t len);         // Fairly accurate, slightly slower
-u32 HashFNV(const u8* ptr, int length);              // Another fast and decent hash
-u32 HashEctor(const u8* ptr, int length);            // JUNK. DO NOT USE FOR NEW THINGS
-u64 GetCRC32(const u8 *src, int len, u32 samples); // SSE4.2 version of CRC32
-u64 GetHashHiresTexture(const u8 *src, int len, u32 samples);
-u64 GetMurmurHash3(const u8 *src, int len, u32 samples);
-u64 GetHash64(const u8 *src, int len, u32 samples);
-void SetHash64Function(bool useHiresTextures);
+namespace Common {
+
+void MurmurHash3_128(const void* key, int len, u32 seed, void* out);
+
+/**
+ * Computes a 64-bit hash over the specified block of data
+ * @param data Block of data to compute hash over
+ * @param len Length of data (in bytes) to compute hash over
+ * @returns 64-bit hash value that was computed over the data block
+ */
+static inline u64 ComputeHash64(const void* data, int len) {
+    u64 res[2];
+    MurmurHash3_128(data, len, 0, res);
+    return res[0];
+}
+
+} // namespace Common

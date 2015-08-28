@@ -1,42 +1,49 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common.h"
+#include "common/logging/log.h"
 #include "common/emu_window.h"
-#include "common/log.h"
 
 #include "core/core.h"
+#include "core/settings.h"
 
-#include "video_core/video_core.h"
-#include "video_core/renderer_base.h"
-#include "video_core/renderer_opengl/renderer_opengl.h"
+#include "video_core.h"
+#include "renderer_base.h"
+#include "renderer_opengl/renderer_opengl.h"
+
+#include "pica.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Video Core namespace
 
 namespace VideoCore {
 
-EmuWindow*      g_emu_window    = NULL;     ///< Frontend emulator window
-RendererBase*   g_renderer      = NULL;     ///< Renderer plugin
-int             g_current_frame = 0;
+EmuWindow*      g_emu_window    = nullptr;     ///< Frontend emulator window
+RendererBase*   g_renderer      = nullptr;     ///< Renderer plugin
+
+std::atomic<bool> g_hw_renderer_enabled;
+std::atomic<bool> g_shader_jit_enabled;
 
 /// Initialize the video core
 void Init(EmuWindow* emu_window) {
+    Pica::Init();
+
     g_emu_window = emu_window;
     g_renderer = new RendererOpenGL();
     g_renderer->SetWindow(g_emu_window);
     g_renderer->Init();
 
-    g_current_frame = 0;
-
-    NOTICE_LOG(VIDEO, "initialized OK");
+    LOG_DEBUG(Render, "initialized OK");
 }
 
 /// Shutdown the video core
 void Shutdown() {
+    Pica::Shutdown();
+
     delete g_renderer;
-    NOTICE_LOG(VIDEO, "shutdown OK");
+
+    LOG_DEBUG(Render, "shutdown OK");
 }
 
 } // namespace

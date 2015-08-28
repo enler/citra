@@ -24,7 +24,20 @@
    <bool>true</bool>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="horizontalLayout"/>
+   <layout class="QHBoxLayout" name="horizontalLayout">
+    <property name="leftMargin">
+     <number>0</number>
+    </property>
+    <property name="topMargin">
+     <number>0</number>
+    </property>
+    <property name="rightMargin">
+     <number>0</number>
+    </property>
+    <property name="bottomMargin">
+     <number>0</number>
+    </property>
+   </layout>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
@@ -32,15 +45,22 @@
      <x>0</x>
      <y>0</y>
      <width>1081</width>
-     <height>20</height>
+     <height>21</height>
     </rect>
    </property>
    <widget class="QMenu" name="menu_File">
     <property name="title">
      <string>&amp;File</string>
     </property>
+    <widget class="QMenu" name="menu_recent_files">
+     <property name="title">
+      <string>Recent Files</string>
+     </property>
+    </widget>
     <addaction name="action_Load_File"/>
     <addaction name="action_Load_Symbol_Map"/>
+    <addaction name="separator"/>
+    <addaction name="menu_recent_files"/>
     <addaction name="separator"/>
     <addaction name="action_Exit"/>
    </widget>
@@ -52,13 +72,16 @@
     <addaction name="action_Pause"/>
     <addaction name="action_Stop"/>
     <addaction name="separator"/>
+    <addaction name="action_Use_Hardware_Renderer"/>
+    <addaction name="action_Use_Shader_JIT"/>
     <addaction name="action_Configure"/>
    </widget>
    <widget class="QMenu" name="menu_View">
     <property name="title">
      <string>&amp;View</string>
     </property>
-    <addaction name="action_Popout_Window_Mode"/>
+    <addaction name="action_Single_Window_Mode"/>
+    <addaction name="actionDisplay_widget_title_bars"/>
     <addaction name="action_Hotkeys"/>
    </widget>
    <widget class="QMenu" name="menu_Help">
@@ -73,22 +96,25 @@
    <addaction name="menu_Help"/>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
-   <action name="action_Load_File">
-     <property name="text">
-       <string>Load file...</string>
-     </property>
-   </action>
-   <action name="action_Load_Symbol_Map">
-     <property name="text">
-       <string>Load symbol map...</string>
-     </property>
-   </action>
-   <action name="action_Exit">
+  <action name="action_Load_File">
+   <property name="text">
+    <string>Load File...</string>
+   </property>
+  </action>
+  <action name="action_Load_Symbol_Map">
+   <property name="text">
+    <string>Load Symbol Map...</string>
+   </property>
+  </action>
+  <action name="action_Exit">
    <property name="text">
     <string>E&amp;xit</string>
    </property>
   </action>
   <action name="action_Start">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="text">
     <string>&amp;Start</string>
    </property>
@@ -101,35 +127,59 @@
     <string>&amp;Pause</string>
    </property>
   </action>
-   <action name="action_Stop">
-     <property name="enabled">
-       <bool>false</bool>
-     </property>
-     <property name="text">
-       <string>&amp;Stop</string>
-     </property>
-   </action>
-   <action name="action_About">
-     <property name="text">
-       <string>About Citra</string>
-     </property>
-   </action>
-   <action name="action_Popout_Window_Mode">
-     <property name="checkable">
-       <bool>true</bool>
-     </property>
-     <property name="text">
-       <string>Popout window</string>
-     </property>
-   </action>
-   <action name="action_Hotkeys">
+  <action name="action_Stop">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>&amp;Stop</string>
+   </property>
+  </action>
+  <action name="action_About">
+   <property name="text">
+    <string>About Citra</string>
+   </property>
+  </action>
+  <action name="action_Single_Window_Mode">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Single Window Mode</string>
+   </property>
+  </action>
+  <action name="action_Hotkeys">
    <property name="text">
     <string>Configure &amp;Hotkeys ...</string>
+   </property>
+  </action>
+  <action name="action_Use_Hardware_Renderer">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Use Hardware Renderer</string>
+   </property>
+  </action>
+  <action name="action_Use_Shader_JIT">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Use Shader JIT</string>
    </property>
   </action>
   <action name="action_Configure">
    <property name="text">
     <string>Configure ...</string>
+   </property>
+  </action>
+  <action name="actionDisplay_widget_title_bars">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>Display Dock Widget Headers</string>
    </property>
   </action>
  </widget>
@@ -167,8 +217,25 @@
     </hint>
    </hints>
   </connection>
+  <connection>
+   <sender>actionDisplay_widget_title_bars</sender>
+   <signal>triggered(bool)</signal>
+   <receiver>MainWindow</receiver>
+   <slot>OnDisplayTitleBars(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>-1</x>
+     <y>-1</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>540</x>
+     <y>364</y>
+    </hint>
+   </hints>
+  </connection>
  </connections>
  <slots>
   <slot>OnConfigure()</slot>
+  <slot>OnDisplayTitleBars(bool)</slot>
  </slots>
 </ui>

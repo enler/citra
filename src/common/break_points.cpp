@@ -1,22 +1,22 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common.h"
 #include "common/debug_interface.h"
 #include "common/break_points.h"
+#include "common/logging/log.h"
 
 #include <sstream>
 #include <algorithm>
 
-bool BreakPoints::IsAddressBreakPoint(u32 iAddress)
+bool BreakPoints::IsAddressBreakPoint(u32 iAddress) const
 {
     auto cond = [&iAddress](const TBreakPoint& bp) { return bp.iAddress == iAddress; };
     auto it   = std::find_if(m_BreakPoints.begin(), m_BreakPoints.end(), cond);
     return it != m_BreakPoints.end();
 }
 
-bool BreakPoints::IsTempBreakPoint(u32 iAddress)
+bool BreakPoints::IsTempBreakPoint(u32 iAddress) const
 {
     auto cond = [&iAddress](const TBreakPoint& bp) { return bp.iAddress == iAddress && bp.bTemporary; };
     auto it   = std::find_if(m_BreakPoints.begin(), m_BreakPoints.end(), cond);
@@ -180,7 +180,7 @@ void TMemCheck::Action(DebugInterface *debug_interface, u32 iValue, u32 addr,
     {
         if (Log)
         {
-            INFO_LOG(MEMMAP, "CHK %08x (%s) %s%i %0*x at %08x (%s)",
+            LOG_DEBUG(Debug_Breakpoint, "CHK %08x (%s) %s%i %0*x at %08x (%s)",
                 pc, debug_interface->getDescription(pc).c_str(),
                 write ? "Write" : "Read", size*8, size*2, iValue, addr,
                 debug_interface->getDescription(addr).c_str()

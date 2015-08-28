@@ -1,0 +1,51 @@
+# shallow clone
+clone_depth: 5
+
+environment:
+  QTDIR: C:\Qt\5.4\msvc2013_64_opengl
+  BUILD_PASSWORD:
+    secure: EXGNlWKJsCtbeImEJ5EP9qrxZ+EqUFfNy+CP61nDOMA=
+
+platform:
+  - x64
+
+configuration:
+  - Release
+
+install:
+  - git submodule update --init --recursive
+
+before_build:
+  - mkdir build
+  - cd build
+  - cmake -G "Visual Studio 12 Win64" ..
+  - cd ..
+
+after_build:
+    # copying the needed QT Dlls is now done post build. See the CMakeLists.txt file in the citra-qt folder
+  - ps: >
+        if (!"$env:APPVEYOR_PULL_REQUEST_TITLE" -and ("$env:APPVEYOR_REPO_BRANCH" -eq "master"))
+          {
+            $GITDATE = $(git show -s --date=short --format='%ad') -replace "-",""
+            $GITREV = $(git show -s --format='%h')
+            # Where are these spaces coming from? Regardless, let's remove them
+            $BUILD_NAME = "citra-${GITDATE}-${GITREV}-windows-amd64.7z" -replace " ",""
+            $BUILD_NAME_NOQT = "citra-noqt-${GITDATE}-${GITREV}-windows-amd64.7z" -replace " ",""
+            # Zip up the build folder
+            7z a $BUILD_NAME .\build\bin\release\*
+            # Do a second archive with only the binaries
+            7z a $BUILD_NAME_NOQT .\build\bin\release\*.exe
+
+            # Download winscp
+            Invoke-WebRequest "http://iweb.dl.sourceforge.net/project/winscp/WinSCP/5.7.3/winscp573.zip" -OutFile "winscp573.zip"
+            7z e -y winscp573.zip
+
+            # Upload to server
+            .\WinSCP.com /command `
+                "option batch abort" `
+                "option confirm off" `
+                "open sftp://citra-builds:${env:BUILD_PASSWORD}@builds.citra-emu.org -hostkey=*" `
+                "put $BUILD_NAME /citra/nightly/windows-amd64/" `
+                "put $BUILD_NAME_NOQT /citra/nightly/windows-noqt-amd64/" `
+                "exit"
+          }

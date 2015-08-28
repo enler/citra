@@ -1,10 +1,16 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include "common/common.h"
+#include <memory>
+
+#include "common/common_types.h"
+
+#include "video_core/hwrasterizer_base.h"
+
+class EmuWindow;
 
 class RendererBase : NonCopyable {
 public:
@@ -19,13 +25,13 @@ public:
     RendererBase() : m_current_fps(0), m_current_frame(0) {
     }
 
-    ~RendererBase() {
+    virtual ~RendererBase() {
     }
 
     /// Swap buffers (render frame)
     virtual void SwapBuffers() = 0;
 
-    /** 
+    /**
      * Set the emulator window to use for renderer
      * @param window EmuWindow handle to emulator window to use for rendering
      */
@@ -47,6 +53,8 @@ public:
     int current_frame() const {
         return m_current_frame;
     }
+
+    std::unique_ptr<HWRasterizer> hw_rasterizer;
 
 protected:
     f32 m_current_fps;              ///< Current framerate, should be set by the renderer

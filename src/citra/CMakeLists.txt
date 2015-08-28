@@ -1,30 +1,26 @@
 set(SRCS
             emu_window/emu_window_glfw.cpp
             citra.cpp
+            config.cpp
+            citra.rc
             )
 set(HEADERS
             emu_window/emu_window_glfw.h
+            config.h
+            default_ini.h
             resource.h
             )
 
 create_directory_groups(${SRCS} ${HEADERS})
 
-# NOTE: This is a workaround for CMake bug 0006976 (missing X11_xf86vmode_LIB variable)
-if (NOT X11_xf86vmode_LIB)
-    set(X11_xv86vmode_LIB Xxf86vm)
-endif()
-
 add_executable(citra ${SRCS} ${HEADERS})
-target_link_libraries(citra core common video_core)
-target_link_libraries(citra ${OPENGL_gl_LIBRARY} ${GLFW_LIBRARIES})
-
-if (APPLE)
-    target_link_libraries(citra iconv pthread ${COREFOUNDATION_LIBRARY})
-elseif (WIN32)
-    target_link_libraries(citra winmm)
-else() # Unix
-    target_link_libraries(citra pthread rt)
-    target_link_libraries(citra ${X11_X11_LIB} ${X11_Xi_LIB} ${X11_Xcursor_LIB} ${X11_Xrandr_LIB} ${X11_xv86vmode_LIB})
+target_link_libraries(citra core video_core common)
+target_link_libraries(citra ${GLFW_LIBRARIES} ${OPENGL_gl_LIBRARY} inih)
+if (MSVC)
+    target_link_libraries(citra getopt)
 endif()
+target_link_libraries(citra ${PLATFORM_LIBRARIES})
 
-#install(TARGETS citra RUNTIME DESTINATION ${bindir})
+if(${CMAKE_SYSTEM_NAME} MATCHES "Linux|FreeBSD|OpenBSD|NetBSD")
+    install(TARGETS citra RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}/bin")
+endif()

@@ -1,27 +1,25 @@
-#include "disassembler.hxx"
+// Copyright 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
 
-#include "../bootmanager.hxx"
-#include "../hotkeys.hxx"
+#include <QShortcut>
 
-#include "common/common.h"
-#include "core/mem_map.h"
+#include "disassembler.h"
+
+#include "../bootmanager.h"
+#include "../hotkeys.h"
+
+#include "core/memory.h"
 
 #include "core/core.h"
 #include "common/break_points.h"
 #include "common/symbols.h"
-#include "core/arm/interpreter/armdefs.h"
+#include "core/arm/arm_interface.h"
 #include "core/arm/disassembler/arm_disasm.h"
 
-DisassemblerModel::DisassemblerModel(QObject* parent) : QAbstractItemModel(parent), base_address(0), code_size(0), program_counter(0), selection(QModelIndex()) {
 
-}
-
-QModelIndex DisassemblerModel::index(int row, int column, const QModelIndex& parent) const {
-    return createIndex(row, column);
-}
-
-QModelIndex DisassemblerModel::parent(const QModelIndex& child) const {
-    return QModelIndex();
+DisassemblerModel::DisassemblerModel(QObject* parent) :
+    QAbstractListModel(parent), base_address(0), code_size(0), program_counter(0), selection(QModelIndex()) {
 }
 
 int DisassemblerModel::columnCount(const QModelIndex& parent) const {
@@ -160,34 +158,28 @@ void DisassemblerModel::SetNextInstruction(unsigned int address) {
     emit dataChanged(prev_index, prev_index);
 }
 
-DisassemblerWidget::DisassemblerWidget(QWidget* parent, EmuThread& emu_thread) : QDockWidget(parent), base_addr(0), emu_thread(emu_thread)
-{
-    disasm_ui.setupUi(this);
+DisassemblerWidget::DisassemblerWidget(QWidget* parent, EmuThread* emu_thread) :
+    QDockWidget(parent), base_addr(0), emu_thread(emu_thread) {
 
-    model = new DisassemblerModel(this);
-    disasm_ui.treeView->setModel(model);
+    disasm_ui.setupUi(this);
 
     RegisterHotkey("Disassembler", "Start/Stop", QKeySequence(Qt::Key_F5), Qt::ApplicationShortcut);
     RegisterHotkey("Disassembler", "Step", QKeySequence(Qt::Key_F10), Qt::ApplicationShortcut);
     RegisterHotkey("Disassembler", "Step into", QKeySequence(Qt::Key_F11), Qt::ApplicationShortcut);
     RegisterHotkey("Disassembler", "Set Breakpoint", QKeySequence(Qt::Key_F9), Qt::ApplicationShortcut);
 
-    connect(disasm_ui.button_breakpoint, SIGNAL(clicked()), model, SLOT(OnSetOrUnsetBreakpoint()));
     connect(disasm_ui.button_step, SIGNAL(clicked()), this, SLOT(OnStep()));
     connect(disasm_ui.button_pause, SIGNAL(clicked()), this, SLOT(OnPause()));
     connect(disasm_ui.button_continue, SIGNAL(clicked()), this, SLOT(OnContinue()));
 
-    connect(disasm_ui.treeView->selectionModel(), SIGNAL(currentChanged(const QModelIndex&, const QModelIndex&)),
-            model, SLOT(OnSelectionChanged(const QModelIndex&)));
-
     connect(GetHotkey("Disassembler", "Start/Stop", this), SIGNAL(activated()), this, SLOT(OnToggleStartStop()));
     connect(GetHotkey("Disassembler", "Step", this), SIGNAL(activated()), this, SLOT(OnStep()));
     connect(GetHotkey("Disassembler", "Step into", this), SIGNAL(activated()), this, SLOT(OnStepInto()));
-    connect(GetHotkey("Disassembler", "Set Breakpoint", this), SIGNAL(activated()), model, SLOT(OnSetOrUnsetBreakpoint()));
+
+    setEnabled(false);
 }
 
-void DisassemblerWidget::Init()
-{
+void DisassemblerWidget::Init() {
     model->ParseFromAddress(Core::g_app_core->GetPC());
 
     disasm_ui.treeView->resizeColumnToContents(0);
@@ -199,44 +191,37 @@ void DisassemblerWidget::Init()
     disasm_ui.treeView->selectionModel()->setCurrentIndex(model_index, QItemSelectionModel::SelectCurrent | QItemSelectionModel::Rows);
 }
 
-void DisassemblerWidget::OnContinue()
-{
-    emu_thread.SetCpuRunning(true);
+void DisassemblerWidget::OnContinue() {
+    emu_thread->SetRunning(true);
 }
 
-void DisassemblerWidget::OnStep()
-{
+void DisassemblerWidget::OnStep() {
     OnStepInto(); // change later
 }
 
-void DisassemblerWidget::OnStepInto()
-{
-    emu_thread.SetCpuRunning(false);
-    emu_thread.ExecStep();
+void DisassemblerWidget::OnStepInto() {
+    emu_thread->SetRunning(false);
+    emu_thread->ExecStep();
 }
 
-void DisassemblerWidget::OnPause()
-{
-    emu_thread.SetCpuRunning(false);
+void DisassemblerWidget::OnPause() {
+    emu_thread->SetRunning(false);
 
     // TODO: By now, the CPU might not have actually stopped...
-    model->SetNextInstruction(Core::g_app_core->GetPC());
-}
-
-void DisassemblerWidget::OnToggleStartStop()
-{
-    emu_thread.SetCpuRunning(!emu_thread.IsCpuRunning());
-}
-
-void DisassemblerWidget::OnCPUStepped()
-{
-    ARMword next_instr = Core::g_app_core->GetPC();
-
-    // TODO: Make BreakPoints less crappy (i.e. const-correct) so that this doesn't need a const_cast.
-    if (const_cast<BreakPoints&>(model->GetBreakPoints()).IsAddressBreakPoint(next_instr))
-    {
-        emu_thread.SetCpuRunning(false);
+    if (Core::g_app_core) {
+        model->SetNextInstruction(Core::g_app_core->GetPC());
     }
+}
+
+void DisassemblerWidget::OnToggleStartStop() {
+    emu_thread->SetRunning(!emu_thread->IsRunning());
+}
+
+void DisassemblerWidget::OnDebugModeEntered() {
+    u32 next_instr = Core::g_app_core->GetPC();
+
+    if (model->GetBreakPoints().IsAddressBreakPoint(next_instr))
+        emu_thread->SetRunning(false);
 
     model->SetNextInstruction(next_instr);
 
@@ -245,11 +230,35 @@ void DisassemblerWidget::OnCPUStepped()
     disasm_ui.treeView->selectionModel()->setCurrentIndex(model_index, QItemSelectionModel::SelectCurrent | QItemSelectionModel::Rows);
 }
 
-int DisassemblerWidget::SelectedRow()
-{
+void DisassemblerWidget::OnDebugModeLeft() {
+}
+
+int DisassemblerWidget::SelectedRow() {
     QModelIndex index = disasm_ui.treeView->selectionModel()->currentIndex();
     if (!index.isValid())
         return -1;
 
     return disasm_ui.treeView->selectionModel()->currentIndex().row();
+}
+
+void DisassemblerWidget::OnEmulationStarting(EmuThread* emu_thread) {
+    this->emu_thread = emu_thread;
+
+    model = new DisassemblerModel(this);
+    disasm_ui.treeView->setModel(model);
+
+    connect(disasm_ui.treeView->selectionModel(), SIGNAL(currentChanged(const QModelIndex&, const QModelIndex&)),
+        model, SLOT(OnSelectionChanged(const QModelIndex&)));
+    connect(disasm_ui.button_breakpoint, SIGNAL(clicked()), model, SLOT(OnSetOrUnsetBreakpoint()));
+    connect(GetHotkey("Disassembler", "Set Breakpoint", this), SIGNAL(activated()), model, SLOT(OnSetOrUnsetBreakpoint()));
+
+    Init();
+    setEnabled(true);
+}
+
+void DisassemblerWidget::OnEmulationStopping() {
+    disasm_ui.treeView->setModel(nullptr);
+    delete model;
+    emu_thread = nullptr;
+    setEnabled(false);
 }

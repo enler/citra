@@ -1,6 +1,6 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
-// Refer to the license.txt file included.  
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
 
 #pragma once
 
@@ -11,42 +11,35 @@
 
 namespace Kernel {
 
-/**
- * Changes whether an event is locked or not
- * @param handle Handle to event to change
- * @param locked Boolean locked value to set event
- * @return Result of operation, 0 on success, otherwise error code
- */
-Result SetEventLocked(const Handle handle, const bool locked);
+class Event final : public WaitObject {
+public:
+    /**
+     * Creates an event
+     * @param reset_type ResetType describing how to create event
+     * @param name Optional name of event
+     */
+    static SharedPtr<Event> Create(ResetType reset_type, std::string name = "Unknown");
 
-/**
- * Hackish function to set an events permanent lock state, used to pass through synch blocks
- * @param handle Handle to event to change
- * @param permanent_locked Boolean permanent locked value to set event
- * @return Result of operation, 0 on success, otherwise error code
- */
-Result SetPermanentLock(Handle handle, const bool permanent_locked);
+    std::string GetTypeName() const override { return "Event"; }
+    std::string GetName() const override { return name; }
 
-/**
- * Signals an event
- * @param handle Handle to event to signal
- * @return Result of operation, 0 on success, otherwise error code
- */
-Result SignalEvent(const Handle handle);
+    static const HandleType HANDLE_TYPE = HandleType::Event;
+    HandleType GetHandleType() const override { return HANDLE_TYPE; }
 
-/**
- * Clears an event
- * @param handle Handle to event to clear
- * @return Result of operation, 0 on success, otherwise error code
- */
-Result ClearEvent(Handle handle);
+    ResetType reset_type;                   ///< Current ResetType
 
-/**
- * Creates an event
- * @param reset_type ResetType describing how to create event
- * @param name Optional name of event
- * @return Handle to newly created Event object
- */
-Handle CreateEvent(const ResetType reset_type, const std::string& name="Unknown");
+    bool signaled;                          ///< Whether the event has already been signaled
+    std::string name;                       ///< Name of event (optional)
+
+    bool ShouldWait() override;
+    void Acquire() override;
+
+    void Signal();
+    void Clear();
+
+private:
+    Event();
+    ~Event() override;
+};
 
 } // namespace

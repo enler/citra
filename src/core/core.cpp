@@ -1,27 +1,36 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common_types.h"
+#include "common/logging/log.h"
 
 #include "core/core.h"
-#include "core/hw/hw.h"
-#include "core/arm/disassembler/arm_disasm.h"
-#include "core/arm/interpreter/arm_interpreter.h"
+#include "core/core_timing.h"
 
+#include "core/arm/arm_interface.h"
+#include "core/arm/dyncom/arm_dyncom.h"
 #include "core/hle/hle.h"
 #include "core/hle/kernel/thread.h"
+#include "core/hw/hw.h"
 
 namespace Core {
 
-u64             g_last_ticks    = 0;        ///< Last CPU ticks
-ARM_Disasm*     g_disasm        = nullptr;  ///< ARM disassembler
-ARM_Interface*  g_app_core      = nullptr;  ///< ARM11 application core
-ARM_Interface*  g_sys_core      = nullptr;  ///< ARM11 system (OS) core
+ARM_Interface*     g_app_core = nullptr;  ///< ARM11 application core
+ARM_Interface*     g_sys_core = nullptr;  ///< ARM11 system (OS) core
 
 /// Run the core CPU loop
 void RunLoop(int tight_loop) {
-    g_app_core->Run(tight_loop);
+    // If we don't have a currently active thread then don't execute instructions,
+    // instead advance to the next event and try to yield to the next thread
+    if (Kernel::GetCurrentThread() == nullptr) {
+        LOG_TRACE(Core_ARM11, "Idling");
+        CoreTiming::Idle();
+        CoreTiming::Advance();
+        HLE::Reschedule(__func__);
+    } else {
+        g_app_core->Run(tight_loop);
+    }
+
     HW::Update();
     if (HLE::g_reschedule) {
         Kernel::Reschedule();
@@ -45,23 +54,18 @@ void Stop() {
 
 /// Initialize the core
 int Init() {
-    NOTICE_LOG(MASTER_LOG, "initialized OK");
+    g_sys_core = new ARM_DynCom(USER32MODE);
+    g_app_core = new ARM_DynCom(USER32MODE);
 
-    g_disasm = new ARM_Disasm();
-    g_app_core = new ARM_Interpreter();
-    g_sys_core = new ARM_Interpreter();
-
-    g_last_ticks = Core::g_app_core->GetTicks();
-
+    LOG_DEBUG(Core, "Initialized OK");
     return 0;
 }
 
 void Shutdown() {
-    delete g_disasm;
     delete g_app_core;
     delete g_sys_core;
 
-    NOTICE_LOG(MASTER_LOG, "shutdown OK");
+    LOG_DEBUG(Core, "Shutdown OK");
 }
 
 } // namespace

@@ -1,5 +1,5 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include <time.h>
@@ -12,9 +12,9 @@
 #include <sys/time.h>
 #endif
 
-#include "common/common.h"
-#include "common/timer.h"
+#include "common/common_types.h"
 #include "common/string_util.h"
+#include "common/timer.h"
 
 namespace Common
 {
@@ -25,7 +25,7 @@ u32 Timer::GetTimeMs()
     return timeGetTime();
 #else
     struct timeval t;
-    (void)gettimeofday(&t, NULL);
+    (void)gettimeofday(&t, nullptr);
     return ((u32)(t.tv_sec * 1000 + t.tv_usec / 1000));
 #endif
 }
@@ -169,7 +169,6 @@ std::string Timer::GetTimeFormatted()
 {
     time_t sysTime;
     struct tm * gmTime;
-    char formattedTime[13];
     char tmp[13];
 
     time(&sysTime);
@@ -181,14 +180,12 @@ std::string Timer::GetTimeFormatted()
 #ifdef _WIN32
     struct timeb tp;
     (void)::ftime(&tp);
-    sprintf(formattedTime, "%s:%03i", tmp, tp.millitm);
+    return StringFromFormat("%s:%03i", tmp, tp.millitm);
 #else
     struct timeval t;
-    (void)gettimeofday(&t, NULL);
-    sprintf(formattedTime, "%s:%03d", tmp, (int)(t.tv_usec / 1000));
+    (void)gettimeofday(&t, nullptr);
+    return StringFromFormat("%s:%03d", tmp, (int)(t.tv_usec / 1000));
 #endif
-
-    return std::string(formattedTime);
 }
 
 // Returns a timestamp with decimals for precise time comparisons
@@ -200,7 +197,7 @@ double Timer::GetDoubleTime()
     (void)::ftime(&tp);
 #else
     struct timeval t;
-    (void)gettimeofday(&t, NULL);
+    (void)gettimeofday(&t, nullptr);
 #endif
     // Get continuous timestamp
     u64 TmpSeconds = Common::Timer::GetTimeSinceJan1970();

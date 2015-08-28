@@ -1,15 +1,27 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include "core/arm/arm_interface.h"
-#include "core/arm/interpreter/armdefs.h"
+#include "common/common_types.h"
+
+class ARM_Interface;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace Core {
+
+struct ThreadContext {
+    u32 cpu_registers[13];
+    u32 sp;
+    u32 lr;
+    u32 pc;
+    u32 cpsr;
+    u32 fpu_registers[32];
+    u32 fpscr;
+    u32 fpexc;
+};
 
 extern ARM_Interface*   g_app_core;     ///< ARM11 application core
 extern ARM_Interface*   g_sys_core;     ///< ARM11 system (OS) core
@@ -21,13 +33,13 @@ void Start();
 
 /**
  * Run the core CPU loop
- * This function loops for 100 instructions in the CPU before trying to update hardware. This is a
- * little bit faster than SingleStep, and should be pretty much equivalent. The number of
- * instructions chosen is fairly arbitrary, however a large number will more drastically affect the
- * frequency of GSP interrupts and likely break things. The point of this is to just loop in the CPU
- * for more than 1 instruction to reduce overhead and make it a little bit faster...
+ * This function runs the core for the specified number of CPU instructions before trying to update
+ * hardware. This is much faster than SingleStep (and should be equivalent), as the CPU is not
+ * required to do a full dispatch with each instruction. NOTE: the number of instructions requested
+ * is not guaranteed to run, as this will be interrupted preemptively if a hardware update is
+ * requested (e.g. on a thread switch).
  */
-void RunLoop(int tight_loop=100);
+void RunLoop(int tight_loop=1000);
 
 /// Step the CPU one instruction
 void SingleStep();

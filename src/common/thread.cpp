@@ -1,15 +1,24 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include "common/thread.h"
 
 #ifdef __APPLE__
-#include <mach/mach.h>
-#elif defined(BSD4_4) || defined(__OpenBSD__)
-#include <pthread_np.h>
+    #include <mach/mach.h>
 #elif defined(_WIN32)
-#include <Windows.h>
+    #include <Windows.h>
+#else
+    #if defined(BSD4_4) || defined(__OpenBSD__)
+        #include <pthread_np.h>
+    #else
+        #include <pthread.h>
+    #endif
+    #include <sched.h>
+#endif
+
+#ifndef _WIN32
+    #include <unistd.h>
 #endif
 
 namespace Common
@@ -17,7 +26,7 @@ namespace Common
 
 int CurrentThreadId()
 {
-#ifdef _WIN32
+#ifdef _MSC_VER
     return GetCurrentThreadId();
 #elif defined __APPLE__
     return mach_thread_self();
@@ -25,8 +34,16 @@ int CurrentThreadId()
     return 0;
 #endif
 }
-    
+
 #ifdef _WIN32
+// Supporting functions
+void SleepCurrentThread(int ms)
+{
+    Sleep(ms);
+}
+#endif
+
+#ifdef _MSC_VER
 
 void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 {
@@ -38,12 +55,6 @@ void SetCurrentThreadAffinity(u32 mask)
     SetThreadAffinityMask(GetCurrentThread(), mask);
 }
 
-// Supporting functions
-void SleepCurrentThread(int ms)
-{
-    Sleep(ms);
-}
-
 void SwitchCurrentThread()
 {
     SwitchToThread();
@@ -52,7 +63,7 @@ void SwitchCurrentThread()
 // Sets the debugger-visible name of the current thread.
 // Uses undocumented (actually, it is now documented) trick.
 // http://msdn.microsoft.com/library/default.asp?url=/library/en-us/vsdebug/html/vxtsksettingthreadname.asp
-    
+
 // This is implemented much nicer in upcoming msvc++, see:
 // http://msdn.microsoft.com/en-us/library/xcb2z8hs(VS.100).aspx
 void SetCurrentThreadName(const char* szThreadName)
@@ -81,8 +92,8 @@ void SetCurrentThreadName(const char* szThreadName)
     __except(EXCEPTION_CONTINUE_EXECUTION)
     {}
 }
-    
-#else // !WIN32, so must be POSIX threads
+
+#else // !MSVC_VER, so must be POSIX threads
 
 void SetThreadAffinity(std::thread::native_handle_type thread, u32 mask)
 {
@@ -106,6 +117,7 @@ void SetCurrentThreadAffinity(u32 mask)
     SetThreadAffinity(pthread_self(), mask);
 }
 
+#ifndef _WIN32
 void SleepCurrentThread(int ms)
 {
     usleep(1000 * ms);
@@ -115,7 +127,10 @@ void SwitchCurrentThread()
 {
     usleep(1000 * 1);
 }
+#endif
 
+// MinGW with the POSIX threading model does not support pthread_setname_np
+#if !defined(_WIN32) || defined(_MSC_VER)
 void SetCurrentThreadName(const char* szThreadName)
 {
 #ifdef __APPLE__
@@ -126,6 +141,7 @@ void SetCurrentThreadName(const char* szThreadName)
     pthread_setname_np(pthread_self(), szThreadName);
 #endif
 }
+#endif
 
 #endif
 

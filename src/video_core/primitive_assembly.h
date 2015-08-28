@@ -1,5 +1,5 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
@@ -8,7 +8,7 @@
 
 #include "video_core/pica.h"
 
-#include "video_core/vertex_shader.h"
+#include "video_core/shader/shader_interpreter.h"
 
 namespace Pica {
 
@@ -37,6 +37,7 @@ private:
 
     int buffer_index;
     VertexType buffer[2];
+    bool strip_ready = false;
 };
 
 

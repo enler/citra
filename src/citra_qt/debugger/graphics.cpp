@@ -1,11 +1,13 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "graphics.hxx"
+#include "graphics.h"
 #include <QListView>
 #include <QVBoxLayout>
 #include <QDebug>
+
+#include "citra_qt/util/util.h"
 
 extern GraphicsDebugger g_debugger;
 
@@ -72,14 +74,14 @@ void GPUCommandStreamItemModel::OnGXCommandFinishedInternal(int total_command_co
 
 GPUCommandStreamWidget::GPUCommandStreamWidget(QWidget* parent) : QDockWidget(tr("Graphics Debugger"), parent)
 {
-    // TODO: set objectName!
+    setObjectName("GraphicsDebugger");
 
     GPUCommandStreamItemModel* command_model = new GPUCommandStreamItemModel(this);
     g_debugger.RegisterObserver(command_model);
 
     QListView* command_list = new QListView;
     command_list->setModel(command_model);
-    command_list->setFont(QFont("monospace"));
+    command_list->setFont(GetMonospaceFont());
 
     setWidget(command_list);
 }

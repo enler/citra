@@ -1,5 +1,5 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
@@ -8,9 +8,7 @@
 #include <functional>
 #include <vector>
 
-#include "common/log.h"
-
-#include "core/hle/service/gsp.h"
+#include "core/hle/service/gsp_gpu.h"
 
 #include "command_processor.h"
 #include "pica.h"
@@ -39,7 +37,7 @@ public:
         virtual void GXCommandProcessed(int total_command_count)
         {
             const GSP_GPU::Command& cmd = observed->ReadGXCommandHistory(total_command_count-1);
-            ERROR_LOG(GSP, "Received command: id=%x", (int)cmd.id.Value());
+            LOG_TRACE(Debug_GPU, "Received command: id=%x", (int)cmd.id.Value());
         }
 
     protected:
@@ -60,13 +58,13 @@ public:
         if (observers.empty())
             return;
 
-        gx_command_history.push_back(GSP_GPU::Command());
-        GSP_GPU::Command& cmd = gx_command_history[gx_command_history.size()-1];
+        gx_command_history.emplace_back();
+        GSP_GPU::Command& cmd = gx_command_history.back();
 
         memcpy(&cmd, command_data, sizeof(GSP_GPU::Command));
 
         ForEachObserver([this](DebuggerObserver* observer) {
-                          observer->GXCommandProcessed(this->gx_command_history.size());
+                          observer->GXCommandProcessed(static_cast<int>(this->gx_command_history.size()));
                         } );
     }
 
@@ -85,7 +83,7 @@ public:
 
     void UnregisterObserver(DebuggerObserver* observer)
     {
-        std::remove(observers.begin(), observers.end(), observer);
+        observers.erase(std::remove(observers.begin(), observers.end(), observer), observers.end());
         observer->observed = nullptr;
     }
 

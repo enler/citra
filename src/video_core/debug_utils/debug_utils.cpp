@@ -3,8 +3,11 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
-#include <map>
+#include <condition_variable>
+#include <cstring>
 #include <fstream>
+#include <list>
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -12,13 +15,75 @@
 #include <png.h>
 #endif
 
+#include <nihstro/float24.h>
+#include <nihstro/shader_binary.h>
+
+#include "common/assert.h"
+#include "common/color.h"
+#include "common/common_types.h"
 #include "common/file_util.h"
+#include "common/math_util.h"
+#include "common/vector_math.h"
+
+#include "core/settings.h"
 
 #include "video_core/pica.h"
+#include "video_core/renderer_base.h"
+#include "video_core/utils.h"
+#include "video_core/video_core.h"
 
 #include "debug_utils.h"
 
+using nihstro::DVLBHeader;
+using nihstro::DVLEHeader;
+using nihstro::DVLPHeader;
+
 namespace Pica {
+
+void DebugContext::OnEvent(Event event, void* data) {
+    if (!breakpoints[event].enabled)
+        return;
+
+    {
+        std::unique_lock<std::mutex> lock(breakpoint_mutex);
+
+        if (Settings::values.use_hw_renderer) {
+            // Commit the hardware renderer's framebuffer so it will show on debug widgets
+            VideoCore::g_renderer->hw_rasterizer->CommitFramebuffer();
+        }
+
+        // TODO: Should stop the CPU thread here once we multithread emulation.
+
+        active_breakpoint = event;
+        at_breakpoint = true;
+
+        // Tell all observers that we hit a breakpoint
+        for (auto& breakpoint_observer : breakpoint_observers) {
+            breakpoint_observer->OnPicaBreakPointHit(event, data);
+        }
+
+        // Wait until another thread tells us to Resume()
+        resume_from_breakpoint.wait(lock, [&]{ return !at_breakpoint; });
+    }
+}
+
+void DebugContext::Resume() {
+    {
+        std::lock_guard<std::mutex> lock(breakpoint_mutex);
+
+        // Tell all observers that we are about to resume
+        for (auto& breakpoint_observer : breakpoint_observers) {
+            breakpoint_observer->OnPicaResume();
+        }
+
+        // Resume the waiting thread (i.e. OnEvent())
+        at_breakpoint = false;
+    }
+
+    resume_from_breakpoint.notify_one();
+}
+
+std::shared_ptr<DebugContext> g_debug_context; // TODO: Get rid of this global
 
 namespace DebugUtils {
 
@@ -27,15 +92,11 @@ void GeometryDumper::AddTriangle(Vertex& v0, Vertex& v1, Vertex& v2) {
     vertices.push_back(v1);
     vertices.push_back(v2);
 
-    int num_vertices = vertices.size();
+    int num_vertices = (int)vertices.size();
     faces.push_back({ num_vertices-3, num_vertices-2, num_vertices-1 });
 }
 
 void GeometryDumper::Dump() {
-    // NOTE: Permanently enabling this just trashes the hard disk for no reason.
-    //       Hence, this is currently disabled.
-    return;
-
     static int index = 0;
     std::string filename = std::string("geometry_dump") + std::to_string(++index) + ".obj";
 
@@ -54,73 +115,9 @@ void GeometryDumper::Dump() {
     }
 }
 
-#pragma pack(1)
-struct DVLBHeader {
-    enum : u32 {
-        MAGIC_WORD = 0x424C5644, // "DVLB"
-    };
 
-    u32 magic_word;
-    u32 num_programs;
-//    u32 dvle_offset_table[];
-};
-static_assert(sizeof(DVLBHeader) == 0x8, "Incorrect structure size");
-
-struct DVLPHeader {
-    enum : u32 {
-        MAGIC_WORD = 0x504C5644, // "DVLP"
-    };
-
-    u32 magic_word;
-    u32 version;
-    u32 binary_offset;  // relative to DVLP start
-    u32 binary_size_words;
-    u32 swizzle_patterns_offset;
-    u32 swizzle_patterns_num_entries;
-    u32 unk2;
-};
-static_assert(sizeof(DVLPHeader) == 0x1C, "Incorrect structure size");
-
-struct DVLEHeader {
-    enum : u32 {
-        MAGIC_WORD = 0x454c5644, // "DVLE"
-    };
-
-    enum class ShaderType : u8 {
-        VERTEX = 0,
-        GEOMETRY = 1,
-    };
-
-    u32 magic_word;
-    u16 pad1;
-    ShaderType type;
-    u8 pad2;
-    u32 main_offset_words; // offset within binary blob
-    u32 endmain_offset_words;
-    u32 pad3;
-    u32 pad4;
-    u32 constant_table_offset;
-    u32 constant_table_size; // number of entries
-    u32 label_table_offset;
-    u32 label_table_size;
-    u32 output_register_table_offset;
-    u32 output_register_table_size;
-    u32 uniform_table_offset;
-    u32 uniform_table_size;
-    u32 symbol_table_offset;
-    u32 symbol_table_size;
-
-};
-static_assert(sizeof(DVLEHeader) == 0x40, "Incorrect structure size");
-#pragma pack()
-
-void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data, u32 swizzle_size,
-                u32 main_offset, const Regs::VSOutputAttributes* output_attributes)
+void DumpShader(const std::string& filename, const Regs::ShaderConfig& config, const State::ShaderSetup& setup, const Regs::VSOutputAttributes* output_attributes)
 {
-    // NOTE: Permanently enabling this just trashes hard disks for no reason.
-    //       Hence, this is currently disabled.
-    return;
-
     struct StuffToWrite {
         u8* pointer;
         u32 size;
@@ -139,11 +136,14 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
     // into shbin format (separate type and component mask).
     union OutputRegisterInfo {
         enum Type : u64 {
-            POSITION = 0,
-            COLOR = 2,
-            TEXCOORD0 = 3,
-            TEXCOORD1 = 5,
-            TEXCOORD2 = 6,
+            POSITION   = 0,
+            QUATERNION = 1,
+            COLOR      = 2,
+            TEXCOORD0  = 3,
+            TEXCOORD1  = 5,
+            TEXCOORD2  = 6,
+
+            VIEW       = 8,
         };
 
         BitField< 0, 64, u64> hex;
@@ -155,7 +155,7 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
 
     // This is put into a try-catch block to make sure we notice unknown configurations.
     std::vector<OutputRegisterInfo> output_info_table;
-        for (int i = 0; i < 7; ++i) {
+        for (unsigned i = 0; i < 7; ++i) {
             using OutputAttributes = Pica::Regs::VSOutputAttributes;
 
             // TODO: It's still unclear how the attribute components map to the register!
@@ -165,6 +165,10 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
                 { OutputAttributes::POSITION_Y, { OutputRegisterInfo::POSITION, 2} },
                 { OutputAttributes::POSITION_Z, { OutputRegisterInfo::POSITION, 4} },
                 { OutputAttributes::POSITION_W, { OutputRegisterInfo::POSITION, 8} },
+                { OutputAttributes::QUATERNION_X, { OutputRegisterInfo::QUATERNION, 1} },
+                { OutputAttributes::QUATERNION_Y, { OutputRegisterInfo::QUATERNION, 2} },
+                { OutputAttributes::QUATERNION_Z, { OutputRegisterInfo::QUATERNION, 4} },
+                { OutputAttributes::QUATERNION_W, { OutputRegisterInfo::QUATERNION, 8} },
                 { OutputAttributes::COLOR_R, { OutputRegisterInfo::COLOR, 1} },
                 { OutputAttributes::COLOR_G, { OutputRegisterInfo::COLOR, 2} },
                 { OutputAttributes::COLOR_B, { OutputRegisterInfo::COLOR, 4} },
@@ -174,7 +178,10 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
                 { OutputAttributes::TEXCOORD1_U, { OutputRegisterInfo::TEXCOORD1, 1} },
                 { OutputAttributes::TEXCOORD1_V, { OutputRegisterInfo::TEXCOORD1, 2} },
                 { OutputAttributes::TEXCOORD2_U, { OutputRegisterInfo::TEXCOORD2, 1} },
-                { OutputAttributes::TEXCOORD2_V, { OutputRegisterInfo::TEXCOORD2, 2} }
+                { OutputAttributes::TEXCOORD2_V, { OutputRegisterInfo::TEXCOORD2, 2} },
+                { OutputAttributes::VIEW_X, { OutputRegisterInfo::VIEW, 1} },
+                { OutputAttributes::VIEW_Y, { OutputRegisterInfo::VIEW, 2} },
+                { OutputAttributes::VIEW_Z, { OutputRegisterInfo::VIEW, 4} }
             };
 
             for (const auto& semantic : std::vector<OutputAttributes::Semantic>{
@@ -196,16 +203,16 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
                                         );
 
                     if (it == output_info_table.end()) {
-                        output_info_table.push_back({});
+                        output_info_table.emplace_back();
                         output_info_table.back().type = type;
                         output_info_table.back().component_mask = component_mask;
                         output_info_table.back().id = i;
                     } else {
                         it->component_mask = it->component_mask | component_mask;
                     }
-                } catch (const std::out_of_range& oor) {
-                    _dbg_assert_msg_(GPU, 0, "Unknown output attribute mapping");
-                    ERROR_LOG(GPU, "Unknown output attribute mapping: %03x, %03x, %03x, %03x",
+                } catch (const std::out_of_range& ) {
+                    DEBUG_ASSERT_MSG(false, "Unknown output attribute mapping");
+                    LOG_ERROR(HW_GPU, "Unknown output attribute mapping: %03x, %03x, %03x, %03x",
                               (int)output_attributes[i].map_x.Value(),
                               (int)output_attributes[i].map_y.Value(),
                               (int)output_attributes[i].map_z.Value(),
@@ -229,28 +236,69 @@ void DumpShader(const u32* binary_data, u32 binary_size, const u32* swizzle_data
 
     // TODO: Reduce the amount of binary code written to relevant portions
     dvlp.binary_offset = write_offset - dvlp_offset;
-    dvlp.binary_size_words = binary_size;
-    QueueForWriting((u8*)binary_data, binary_size * sizeof(u32));
+    dvlp.binary_size_words = setup.program_code.size();
+    QueueForWriting((u8*)setup.program_code.data(), setup.program_code.size() * sizeof(u32));
 
-    dvlp.swizzle_patterns_offset = write_offset - dvlp_offset;
-    dvlp.swizzle_patterns_num_entries = swizzle_size;
+    dvlp.swizzle_info_offset = write_offset - dvlp_offset;
+    dvlp.swizzle_info_num_entries = setup.swizzle_data.size();
     u32 dummy = 0;
-    for (int i = 0; i < swizzle_size; ++i) {
-        QueueForWriting((u8*)&swizzle_data[i], sizeof(swizzle_data[i]));
+    for (unsigned int i = 0; i < setup.swizzle_data.size(); ++i) {
+        QueueForWriting((u8*)&setup.swizzle_data[i], sizeof(setup.swizzle_data[i]));
         QueueForWriting((u8*)&dummy, sizeof(dummy));
     }
 
-    dvle.main_offset_words = main_offset;
+    dvle.main_offset_words = config.main_offset;
     dvle.output_register_table_offset = write_offset - dvlb.dvle_offset;
-    dvle.output_register_table_size = output_info_table.size();
-    QueueForWriting((u8*)output_info_table.data(), output_info_table.size() * sizeof(OutputRegisterInfo));
+    dvle.output_register_table_size = static_cast<u32>(output_info_table.size());
+    QueueForWriting((u8*)output_info_table.data(), static_cast<u32>(output_info_table.size() * sizeof(OutputRegisterInfo)));
 
     // TODO: Create a label table for "main"
 
+    std::vector<nihstro::ConstantInfo> constant_table;
+    for (unsigned i = 0; i < setup.uniforms.b.size(); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Bool;
+        constant.regid = i;
+        constant.b = setup.uniforms.b[i];
+        constant_table.emplace_back(constant);
+    }
+    for (unsigned i = 0; i < setup.uniforms.i.size(); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Int;
+        constant.regid = i;
+        constant.i.x = setup.uniforms.i[i].x;
+        constant.i.y = setup.uniforms.i[i].y;
+        constant.i.z = setup.uniforms.i[i].z;
+        constant.i.w = setup.uniforms.i[i].w;
+        constant_table.emplace_back(constant);
+    }
+    for (unsigned i = 0; i < sizeof(setup.uniforms.f) / sizeof(setup.uniforms.f[0]); ++i) {
+        nihstro::ConstantInfo constant;
+        memset(&constant, 0, sizeof(constant));
+        constant.type = nihstro::ConstantInfo::Float;
+        constant.regid = i;
+        constant.f.x = nihstro::to_float24(setup.uniforms.f[i].x.ToFloat32());
+        constant.f.y = nihstro::to_float24(setup.uniforms.f[i].y.ToFloat32());
+        constant.f.z = nihstro::to_float24(setup.uniforms.f[i].z.ToFloat32());
+        constant.f.w = nihstro::to_float24(setup.uniforms.f[i].w.ToFloat32());
+
+        // Store constant if it's different from zero..
+        if (setup.uniforms.f[i].x.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].y.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].z.ToFloat32() != 0.0 ||
+            setup.uniforms.f[i].w.ToFloat32() != 0.0)
+            constant_table.emplace_back(constant);
+    }
+    dvle.constant_table_offset = write_offset - dvlb.dvle_offset;
+    dvle.constant_table_size = constant_table.size();
+    for (const auto& constant : constant_table) {
+        QueueForWriting((uint8_t*)&constant, sizeof(constant));
+    }
 
     // Write data to file
     static int dump_index = 0;
-    std::string filename = std::string("shader_dump") + std::to_string(++dump_index) + std::string(".shbin");
     std::ofstream file(filename, std::ios_base::out | std::ios_base::binary);
 
     for (auto& chunk : writing_queue) {
@@ -265,40 +313,39 @@ static int is_pica_tracing = false;
 void StartPicaTracing()
 {
     if (is_pica_tracing) {
-        ERROR_LOG(GPU, "StartPicaTracing called even though tracing already running!");
+        LOG_WARNING(HW_GPU, "StartPicaTracing called even though tracing already running!");
         return;
     }
 
-    pica_trace_mutex.lock();
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
     pica_trace = std::unique_ptr<PicaTrace>(new PicaTrace);
 
     is_pica_tracing = true;
-    pica_trace_mutex.unlock();
 }
 
 bool IsPicaTracing()
 {
-    return is_pica_tracing;
+    return is_pica_tracing != 0;
 }
 
-void OnPicaRegWrite(u32 id, u32 value)
+void OnPicaRegWrite(PicaTrace::Write write)
 {
     // Double check for is_pica_tracing to avoid pointless locking overhead
     if (!is_pica_tracing)
         return;
 
-    std::unique_lock<std::mutex> lock(pica_trace_mutex);
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
 
     if (!is_pica_tracing)
         return;
 
-    pica_trace->writes.push_back({id, value});
+    pica_trace->writes.push_back(write);
 }
 
 std::unique_ptr<PicaTrace> FinishPicaTracing()
 {
     if (!is_pica_tracing) {
-        ERROR_LOG(GPU, "FinishPicaTracing called even though tracing already running!");
+        LOG_WARNING(HW_GPU, "FinishPicaTracing called even though tracing isn't running!");
         return {};
     }
 
@@ -306,21 +353,276 @@ std::unique_ptr<PicaTrace> FinishPicaTracing()
     is_pica_tracing = false;
 
     // Wait until running tracing is finished
-    pica_trace_mutex.lock();
+    std::lock_guard<std::mutex> lock(pica_trace_mutex);
     std::unique_ptr<PicaTrace> ret(std::move(pica_trace));
-    pica_trace_mutex.unlock();
+
     return std::move(ret);
 }
 
-void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
-    // NOTE: Permanently enabling this just trashes hard disks for no reason.
-    //       Hence, this is currently disabled.
-    return;
+const Math::Vec4<u8> LookupTexture(const u8* source, int x, int y, const TextureInfo& info, bool disable_alpha) {
+    const unsigned int coarse_x = x & ~7;
+    const unsigned int coarse_y = y & ~7;
 
+    if (info.format != Regs::TextureFormat::ETC1 &&
+        info.format != Regs::TextureFormat::ETC1A4) {
+        // TODO(neobrain): Fix code design to unify vertical block offsets!
+        source += coarse_y * info.stride;
+    }
+
+    // TODO: Assert that width/height are multiples of block dimensions
+
+    switch (info.format) {
+    case Regs::TextureFormat::RGBA8:
+    {
+        auto res = Color::DecodeRGBA8(source + VideoCore::GetMortonOffset(x, y, 4));
+        return { res.r(), res.g(), res.b(), static_cast<u8>(disable_alpha ? 255 : res.a()) };
+    }
+
+    case Regs::TextureFormat::RGB8:
+    {
+        auto res = Color::DecodeRGB8(source + VideoCore::GetMortonOffset(x, y, 3));
+        return { res.r(), res.g(), res.b(), 255 };
+    }
+
+    case Regs::TextureFormat::RGB5A1:
+    {
+        auto res = Color::DecodeRGB5A1(source + VideoCore::GetMortonOffset(x, y, 2));
+        return { res.r(), res.g(), res.b(), static_cast<u8>(disable_alpha ? 255 : res.a()) };
+    }
+
+    case Regs::TextureFormat::RGB565:
+    {
+        auto res = Color::DecodeRGB565(source + VideoCore::GetMortonOffset(x, y, 2));
+        return { res.r(), res.g(), res.b(), 255 };
+    }
+
+    case Regs::TextureFormat::RGBA4:
+    {
+        auto res = Color::DecodeRGBA4(source + VideoCore::GetMortonOffset(x, y, 2));
+        return { res.r(), res.g(), res.b(), static_cast<u8>(disable_alpha ? 255 : res.a()) };
+    }
+
+    case Regs::TextureFormat::IA8:
+    {
+        const u8* source_ptr = source + VideoCore::GetMortonOffset(x, y, 2);
+
+        if (disable_alpha) {
+            // Show intensity as red, alpha as green
+            return { source_ptr[1], source_ptr[0], 0, 255 };
+        } else {
+            return { source_ptr[1], source_ptr[1], source_ptr[1], source_ptr[0] };
+        }
+    }
+
+    case Regs::TextureFormat::RG8:
+    {
+        auto res = Color::DecodeRG8(source + VideoCore::GetMortonOffset(x, y, 2));
+        return { res.r(), res.g(), 0, 255 };
+    }
+
+    case Regs::TextureFormat::I8:
+    {
+        const u8* source_ptr = source + VideoCore::GetMortonOffset(x, y, 1);
+        return { *source_ptr, *source_ptr, *source_ptr, 255 };
+    }
+
+    case Regs::TextureFormat::A8:
+    {
+        const u8* source_ptr = source + VideoCore::GetMortonOffset(x, y, 1);
+
+        if (disable_alpha) {
+            return { *source_ptr, *source_ptr, *source_ptr, 255 };
+        } else {
+            return { 0, 0, 0, *source_ptr };
+        }
+    }
+
+    case Regs::TextureFormat::IA4:
+    {
+        const u8* source_ptr = source + VideoCore::GetMortonOffset(x, y, 1);
+
+        u8 i = Color::Convert4To8(((*source_ptr) & 0xF0) >> 4);
+        u8 a = Color::Convert4To8((*source_ptr) & 0xF);
+
+        if (disable_alpha) {
+            // Show intensity as red, alpha as green
+            return { i, a, 0, 255 };
+        } else {
+            return { i, i, i, a };
+        }
+    }
+
+    case Regs::TextureFormat::I4:
+    {
+        u32 morton_offset = VideoCore::GetMortonOffset(x, y, 1);
+        const u8* source_ptr = source + morton_offset / 2;
+
+        u8 i = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
+        i = Color::Convert4To8(i);
+
+        return { i, i, i, 255 };
+    }
+
+    case Regs::TextureFormat::A4:
+    {
+        u32 morton_offset = VideoCore::GetMortonOffset(x, y, 1);
+        const u8* source_ptr = source + morton_offset / 2;
+
+        u8 a = (morton_offset % 2) ? ((*source_ptr & 0xF0) >> 4) : (*source_ptr & 0xF);
+        a = Color::Convert4To8(a);
+
+        if (disable_alpha) {
+            return { a, a, a, 255 };
+        } else {
+            return { 0, 0, 0, a };
+        }
+    }
+
+    case Regs::TextureFormat::ETC1:
+    case Regs::TextureFormat::ETC1A4:
+    {
+        bool has_alpha = (info.format == Regs::TextureFormat::ETC1A4);
+
+        // ETC1 further subdivides each 8x8 tile into four 4x4 subtiles
+        const int subtile_width = 4;
+        const int subtile_height = 4;
+
+        int subtile_index = ((x / subtile_width) & 1) + 2 * ((y / subtile_height) & 1);
+        unsigned subtile_bytes = has_alpha ? 2 : 1; // TODO: Name...
+
+        const u64* source_ptr = (const u64*)(source
+                                             + coarse_x * subtile_bytes * 4
+                                             + coarse_y * subtile_bytes * 4 * (info.width / 8)
+                                             + subtile_index * subtile_bytes * 8);
+        u64 alpha = 0xFFFFFFFFFFFFFFFF;
+        if (has_alpha) {
+            alpha = *source_ptr;
+            source_ptr++;
+        }
+
+        union ETC1Tile {
+            // Each of these two is a collection of 16 bits (one per lookup value)
+            BitField< 0, 16, u64> table_subindexes;
+            BitField<16, 16, u64> negation_flags;
+
+            unsigned GetTableSubIndex(unsigned index) const {
+                return (table_subindexes >> index) & 1;
+            }
+
+            bool GetNegationFlag(unsigned index) const {
+                return ((negation_flags >> index) & 1) == 1;
+            }
+
+            BitField<32, 1, u64> flip;
+            BitField<33, 1, u64> differential_mode;
+
+            BitField<34, 3, u64> table_index_2;
+            BitField<37, 3, u64> table_index_1;
+
+            union {
+                // delta value + base value
+                BitField<40, 3, s64> db;
+                BitField<43, 5, u64> b;
+
+                BitField<48, 3, s64> dg;
+                BitField<51, 5, u64> g;
+
+                BitField<56, 3, s64> dr;
+                BitField<59, 5, u64> r;
+            } differential;
+
+            union {
+                BitField<40, 4, u64> b2;
+                BitField<44, 4, u64> b1;
+
+                BitField<48, 4, u64> g2;
+                BitField<52, 4, u64> g1;
+
+                BitField<56, 4, u64> r2;
+                BitField<60, 4, u64> r1;
+            } separate;
+
+            const Math::Vec3<u8> GetRGB(int x, int y) const {
+                int texel = 4 * x + y;
+
+                if (flip)
+                    std::swap(x, y);
+
+                // Lookup base value
+                Math::Vec3<int> ret;
+                if (differential_mode) {
+                    ret.r() = static_cast<int>(differential.r);
+                    ret.g() = static_cast<int>(differential.g);
+                    ret.b() = static_cast<int>(differential.b);
+                    if (x >= 2) {
+                        ret.r() += static_cast<int>(differential.dr);
+                        ret.g() += static_cast<int>(differential.dg);
+                        ret.b() += static_cast<int>(differential.db);
+                    }
+                    ret.r() = Color::Convert5To8(ret.r());
+                    ret.g() = Color::Convert5To8(ret.g());
+                    ret.b() = Color::Convert5To8(ret.b());
+                } else {
+                    if (x < 2) {
+                        ret.r() = Color::Convert4To8(static_cast<u8>(separate.r1));
+                        ret.g() = Color::Convert4To8(static_cast<u8>(separate.g1));
+                        ret.b() = Color::Convert4To8(static_cast<u8>(separate.b1));
+                    } else {
+                        ret.r() = Color::Convert4To8(static_cast<u8>(separate.r2));
+                        ret.g() = Color::Convert4To8(static_cast<u8>(separate.g2));
+                        ret.b() = Color::Convert4To8(static_cast<u8>(separate.b2));
+                    }
+                }
+
+                // Add modifier
+                unsigned table_index = static_cast<int>((x < 2) ? table_index_1.Value() : table_index_2.Value());
+
+                static const std::array<std::array<u8, 2>, 8> etc1_modifier_table = {{
+                    {  2,  8 }, {  5, 17 }, {  9,  29 }, { 13,  42 },
+                    { 18, 60 }, { 24, 80 }, { 33, 106 }, { 47, 183 }
+                }};
+
+                int modifier = etc1_modifier_table.at(table_index).at(GetTableSubIndex(texel));
+                if (GetNegationFlag(texel))
+                    modifier *= -1;
+
+                ret.r() = MathUtil::Clamp(ret.r() + modifier, 0, 255);
+                ret.g() = MathUtil::Clamp(ret.g() + modifier, 0, 255);
+                ret.b() = MathUtil::Clamp(ret.b() + modifier, 0, 255);
+
+                return ret.Cast<u8>();
+            }
+        } const *etc1_tile = reinterpret_cast<const ETC1Tile*>(source_ptr);
+
+        alpha >>= 4 * ((x & 3) * 4 + (y & 3));
+        return Math::MakeVec(etc1_tile->GetRGB(x & 3, y & 3),
+                             disable_alpha ? (u8)255 : Color::Convert4To8(alpha & 0xF));
+    }
+
+    default:
+        LOG_ERROR(HW_GPU, "Unknown texture format: %x", (u32)info.format);
+        DEBUG_ASSERT(false);
+        return {};
+    }
+}
+
+TextureInfo TextureInfo::FromPicaRegister(const Regs::TextureConfig& config,
+                                          const Regs::TextureFormat& format)
+{
+    TextureInfo info;
+    info.physical_address = config.GetPhysicalAddress();
+    info.width = config.width;
+    info.height = config.height;
+    info.format = format;
+    info.stride = Pica::Regs::NibblesPerPixel(info.format) * info.width / 2;
+    return info;
+}
+
+void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
 #ifndef HAVE_PNG
-	return;
+    return;
 #else
-	if (!data)
+    if (!data)
         return;
 
     // Write data to file
@@ -341,7 +643,7 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     // Initialize write structure
     png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
     if (png_ptr == nullptr) {
-        ERROR_LOG(GPU, "Could not allocate write struct\n");
+        LOG_ERROR(Debug_GPU, "Could not allocate write struct\n");
         goto finalise;
 
     }
@@ -349,19 +651,19 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     // Initialize info structure
     info_ptr = png_create_info_struct(png_ptr);
     if (info_ptr == nullptr) {
-        ERROR_LOG(GPU, "Could not allocate info struct\n");
+        LOG_ERROR(Debug_GPU, "Could not allocate info struct\n");
         goto finalise;
     }
 
     // Setup Exception handling
     if (setjmp(png_jmpbuf(png_ptr))) {
-        ERROR_LOG(GPU, "Error during png creation\n");
+        LOG_ERROR(Debug_GPU, "Error during png creation\n");
         goto finalise;
     }
 
     png_init_io(png_ptr, fp.GetHandle());
 
-    // Write header (8 bit colour depth)
+    // Write header (8 bit color depth)
     png_set_IHDR(png_ptr, info_ptr, texture_config.width, texture_config.height,
         8, PNG_COLOR_TYPE_RGB /*_ALPHA*/, PNG_INTERLACE_NONE,
         PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
@@ -375,34 +677,22 @@ void DumpTexture(const Pica::Regs::TextureConfig& texture_config, u8* data) {
     png_write_info(png_ptr, info_ptr);
 
     buf = new u8[row_stride * texture_config.height];
-    for (int y = 0; y < texture_config.height; ++y) {
-        for (int x = 0; x < texture_config.width; ++x) {
-            // Cf. rasterizer code for an explanation of this algorithm.
-            int texel_index_within_tile = 0;
-            for (int block_size_index = 0; block_size_index < 3; ++block_size_index) {
-                int sub_tile_width = 1 << block_size_index;
-                int sub_tile_height = 1 << block_size_index;
-
-                int sub_tile_index = (x & sub_tile_width) << block_size_index;
-                sub_tile_index += 2 * ((y & sub_tile_height) << block_size_index);
-                texel_index_within_tile += sub_tile_index;
-            }
-
-            const int block_width = 8;
-            const int block_height = 8;
-
-            int coarse_x = (x / block_width) * block_width;
-            int coarse_y = (y / block_height) * block_height;
-
-            u8* source_ptr = (u8*)data + coarse_x * block_height * 3 + coarse_y * row_stride + texel_index_within_tile * 3;
-            buf[3 * x + y * row_stride    ] = source_ptr[2];
-            buf[3 * x + y * row_stride + 1] = source_ptr[1];
-            buf[3 * x + y * row_stride + 2] = source_ptr[0];
+    for (unsigned y = 0; y < texture_config.height; ++y) {
+        for (unsigned x = 0; x < texture_config.width; ++x) {
+            TextureInfo info;
+            info.width = texture_config.width;
+            info.height = texture_config.height;
+            info.stride = row_stride;
+            info.format = g_state.regs.texture0_format;
+            Math::Vec4<u8> texture_color = LookupTexture(data, x, y, info);
+            buf[3 * x + y * row_stride    ] = texture_color.r();
+            buf[3 * x + y * row_stride + 1] = texture_color.g();
+            buf[3 * x + y * row_stride + 2] = texture_color.b();
         }
     }
 
     // Write image data
-    for (auto y = 0; y < texture_config.height; ++y)
+    for (unsigned y = 0; y < texture_config.height; ++y)
     {
         u8* row_ptr = (u8*)buf + y * row_stride;
         u8* ptr = row_ptr;
@@ -428,29 +718,35 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
     using Operation = Pica::Regs::TevStageConfig::Operation;
 
     std::string stage_info = "Tev setup:\n";
-    for (int index = 0; index < stages.size(); ++index) {
+    for (size_t index = 0; index < stages.size(); ++index) {
         const auto& tev_stage = stages[index];
 
-        const std::map<Source, std::string> source_map = {
+        static const std::map<Source, std::string> source_map = {
             { Source::PrimaryColor, "PrimaryColor" },
             { Source::Texture0, "Texture0" },
+            { Source::Texture1, "Texture1" },
+            { Source::Texture2, "Texture2" },
             { Source::Constant, "Constant" },
             { Source::Previous, "Previous" },
         };
 
-        const std::map<ColorModifier, std::string> color_modifier_map = {
-            { ColorModifier::SourceColor, { "%source.rgb" } }
+        static const std::map<ColorModifier, std::string> color_modifier_map = {
+            { ColorModifier::SourceColor, { "%source.rgb" } },
+            { ColorModifier::SourceAlpha, { "%source.aaa" } },
         };
-        const std::map<AlphaModifier, std::string> alpha_modifier_map = {
-            { AlphaModifier::SourceAlpha, "%source.a" }
+        static const std::map<AlphaModifier, std::string> alpha_modifier_map = {
+            { AlphaModifier::SourceAlpha, "%source.a" },
+            { AlphaModifier::OneMinusSourceAlpha, "(255 - %source.a)" },
         };
 
-        std::map<Operation, std::string> combiner_map = {
+        static const std::map<Operation, std::string> combiner_map = {
             { Operation::Replace, "%source1" },
             { Operation::Modulate, "(%source1 * %source2) / 255" },
+            { Operation::Add, "(%source1 + %source2)" },
+            { Operation::Lerp, "lerp(%source1, %source2, %source3)" },
         };
 
-        auto ReplacePattern =
+        static auto ReplacePattern =
                 [](const std::string& input, const std::string& pattern, const std::string& replacement) -> std::string {
                     size_t start = input.find(pattern);
                     if (start == std::string::npos)
@@ -460,8 +756,8 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
                     ret.replace(start, pattern.length(), replacement);
                     return ret;
                 };
-        auto GetColorSourceStr =
-                [&source_map,&color_modifier_map,&ReplacePattern](const Source& src, const ColorModifier& modifier) {
+        static auto GetColorSourceStr =
+                [](const Source& src, const ColorModifier& modifier) {
                     auto src_it = source_map.find(src);
                     std::string src_str = "Unknown";
                     if (src_it != source_map.end())
@@ -474,8 +770,8 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
 
                     return ReplacePattern(modifier_str, "%source", src_str);
                 };
-        auto GetColorCombinerStr =
-                [&](const Regs::TevStageConfig& tev_stage) {
+        static auto GetColorCombinerStr =
+                [](const Regs::TevStageConfig& tev_stage) {
                     auto op_it = combiner_map.find(tev_stage.color_op);
                     std::string op_str = "Unknown op (%source1, %source2, %source3)";
                     if (op_it != combiner_map.end())
@@ -485,8 +781,8 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
                     op_str = ReplacePattern(op_str, "%source2", GetColorSourceStr(tev_stage.color_source2, tev_stage.color_modifier2));
                     return   ReplacePattern(op_str, "%source3", GetColorSourceStr(tev_stage.color_source3, tev_stage.color_modifier3));
                 };
-        auto GetAlphaSourceStr =
-                [&source_map,&alpha_modifier_map,&ReplacePattern](const Source& src, const AlphaModifier& modifier) {
+        static auto GetAlphaSourceStr =
+                [](const Source& src, const AlphaModifier& modifier) {
                     auto src_it = source_map.find(src);
                     std::string src_str = "Unknown";
                     if (src_it != source_map.end())
@@ -499,8 +795,8 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
 
                     return ReplacePattern(modifier_str, "%source", src_str);
                 };
-        auto GetAlphaCombinerStr =
-                [&](const Regs::TevStageConfig& tev_stage) {
+        static auto GetAlphaCombinerStr =
+                [](const Regs::TevStageConfig& tev_stage) {
                     auto op_it = combiner_map.find(tev_stage.alpha_op);
                     std::string op_str = "Unknown op (%source1, %source2, %source3)";
                     if (op_it != combiner_map.end())
@@ -514,7 +810,7 @@ void DumpTevStageConfig(const std::array<Pica::Regs::TevStageConfig,6>& stages)
         stage_info += "Stage " + std::to_string(index) + ": " + GetColorCombinerStr(tev_stage) + "   " + GetAlphaCombinerStr(tev_stage) + "\n";
     }
 
-    DEBUG_LOG(GPU, "%s", stage_info.c_str());
+    LOG_TRACE(HW_GPU, "%s", stage_info.c_str());
 }
 
 } // namespace

@@ -1,5 +1,5 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include "common/symbols.h"
@@ -31,7 +31,7 @@ namespace Symbols
     {
         TSymbolsMap::iterator foundSymbolItr;
         TSymbol symbol;
-        
+
         foundSymbolItr = g_symbols.find(_address);
         if (foundSymbolItr != g_symbols.end())
         {
@@ -44,7 +44,7 @@ namespace Symbols
     {
         return GetSymbol(_address).name;
     }
-    
+
     void Remove(u32 _address)
     {
         g_symbols.erase(_address);

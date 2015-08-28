@@ -1,11 +1,18 @@
+// Copyright 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
+
+#include <map>
+
 #include <QKeySequence>
 #include <QSettings>
-#include "hotkeys.hxx"
-#include <map>
+#include <QShortcut>
+
+#include "hotkeys.h"
 
 struct Hotkey
 {
-    Hotkey() : shortcut(NULL), context(Qt::WindowShortcut) {}
+    Hotkey() : shortcut(nullptr), context(Qt::WindowShortcut) {}
 
     QKeySequence keyseq;
     QShortcut* shortcut;
@@ -81,7 +88,7 @@ QShortcut* GetHotkey(const QString& group, const QString& action, QWidget* widge
     Hotkey& hk = hotkey_groups[group][action];
 
     if (!hk.shortcut)
-        hk.shortcut = new QShortcut(hk.keyseq, widget, NULL, NULL, hk.context);
+        hk.shortcut = new QShortcut(hk.keyseq, widget, nullptr, nullptr, hk.context);
 
     return hk.shortcut;
 }

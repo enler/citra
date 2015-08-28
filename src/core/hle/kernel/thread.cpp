@@ -1,476 +1,531 @@
 // Copyright 2014 Citra Emulator Project / PPSSPP Project
-// Licensed under GPLv2
-// Refer to the license.txt file included.  
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
 
 #include <algorithm>
 #include <list>
-#include <map>
 #include <vector>
 
-#include "common/common.h"
+#include "common/assert.h"
+#include "common/common_types.h"
+#include "common/logging/log.h"
+#include "common/math_util.h"
 #include "common/thread_queue_list.h"
 
+#include "core/arm/arm_interface.h"
+#include "core/arm/skyeye_common/armstate.h"
 #include "core/core.h"
-#include "core/mem_map.h"
+#include "core/core_timing.h"
 #include "core/hle/hle.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/process.h"
 #include "core/hle/kernel/thread.h"
+#include "core/hle/kernel/mutex.h"
+#include "core/hle/result.h"
+#include "core/memory.h"
 
 namespace Kernel {
 
-class Thread : public Kernel::Object {
-public:
+/// Event type for the thread wake up event
+static int ThreadWakeupEventType;
 
-    std::string GetName() const { return name; }
-    std::string GetTypeName() const { return "Thread"; }
+bool Thread::ShouldWait() {
+    return status != THREADSTATUS_DEAD;
+}
 
-    static Kernel::HandleType GetStaticHandleType() { return Kernel::HandleType::Thread; }
-    Kernel::HandleType GetHandleType() const { return Kernel::HandleType::Thread; }
+void Thread::Acquire() {
+    ASSERT_MSG(!ShouldWait(), "object unavailable!");
+}
 
-    inline bool IsRunning() const { return (status & THREADSTATUS_RUNNING) != 0; }
-    inline bool IsStopped() const { return (status & THREADSTATUS_DORMANT) != 0; }
-    inline bool IsReady() const { return (status & THREADSTATUS_READY) != 0; }
-    inline bool IsWaiting() const { return (status & THREADSTATUS_WAIT) != 0; }
-    inline bool IsSuspended() const { return (status & THREADSTATUS_SUSPEND) != 0; }
-
-    /**
-     * Wait for kernel object to synchronize
-     * @param wait Boolean wait set if current thread should wait as a result of sync operation
-     * @return Result of operation, 0 on success, otherwise error code
-     */
-    Result WaitSynchronization(bool* wait) {
-        if (status != THREADSTATUS_DORMANT) {
-            Handle thread = GetCurrentThreadHandle();
-            if (std::find(waiting_threads.begin(), waiting_threads.end(), thread) == waiting_threads.end()) {
-                waiting_threads.push_back(thread);
-            }
-            WaitCurrentThread(WAITTYPE_THREADEND, this->GetHandle());
-            *wait = true;
-        }
-        return 0;
-    }
-
-    ThreadContext context;
-
-    u32 status;
-    u32 entry_point;
-    u32 stack_top;
-    u32 stack_size;
-
-    s32 initial_priority;
-    s32 current_priority;
-
-    s32 processor_id;
-
-    WaitType wait_type;
-    Handle wait_handle;
-
-    std::vector<Handle> waiting_threads;
-
-    std::string name;
-};
+// TODO(yuriks): This can be removed if Thread objects are explicitly pooled in the future, allowing
+//               us to simply use a pool index or similar.
+static Kernel::HandleTable wakeup_callback_handle_table;
 
 // Lists all thread ids that aren't deleted/etc.
-std::vector<Handle> g_thread_queue;
+static std::vector<SharedPtr<Thread>> thread_list;
 
 // Lists only ready thread ids.
-Common::ThreadQueueList<Handle> g_thread_ready_queue;
+static Common::ThreadQueueList<Thread*, THREADPRIO_LOWEST+1> ready_queue;
 
-Handle g_current_thread_handle;
-Thread* g_current_thread;
+static Thread* current_thread;
 
-/// Gets the current thread
-inline Thread* GetCurrentThread() {
-    return g_current_thread;
+// The first available thread id at startup
+static u32 next_thread_id;
+
+/**
+ * Creates a new thread ID
+ * @return The new thread ID
+ */
+inline static u32 const NewThreadId() {
+    return next_thread_id++;
 }
 
-/// Gets the current thread handle
-Handle GetCurrentThreadHandle() {
-    return GetCurrentThread()->GetHandle();
+Thread::Thread() {}
+Thread::~Thread() {}
+
+Thread* GetCurrentThread() {
+    return current_thread;
 }
 
-/// Sets the current thread
-inline void SetCurrentThread(Thread* t) {
-    g_current_thread = t;
-    g_current_thread_handle = t->GetHandle();
-}
-
-/// Saves the current CPU context
-void SaveContext(ThreadContext& ctx) {
-    Core::g_app_core->SaveContext(ctx);
-}
-
-/// Loads a CPU context
-void LoadContext(ThreadContext& ctx) {
-    Core::g_app_core->LoadContext(ctx);
-}
-
-/// Resets a thread
-void ResetThread(Thread* t, u32 arg, s32 lowest_priority) {
-    memset(&t->context, 0, sizeof(ThreadContext));
-
-    t->context.cpu_registers[0] = arg;
-    t->context.pc = t->context.reg_15 = t->entry_point;
-    t->context.sp = t->stack_top;
-    t->context.cpsr = 0x1F; // Usermode
-    
-    // TODO(bunnei): This instructs the CPU core to start the execution as if it is "resuming" a
-    // thread. This is somewhat Sky-Eye specific, and should be re-architected in the future to be
-    // agnostic of the CPU core.
-    t->context.mode = 8;
-
-    if (t->current_priority < lowest_priority) {
-        t->current_priority = t->initial_priority;
-    }
-    t->wait_type = WAITTYPE_NONE;
-    t->wait_handle = 0;
-}
-
-/// Change a thread to "ready" state
-void ChangeReadyState(Thread* t, bool ready) {
-    Handle handle = t->GetHandle();
-    if (t->IsReady()) {
-        if (!ready) {
-            g_thread_ready_queue.remove(t->current_priority, handle);
-        }
-    }  else if (ready) {
-        if (t->IsRunning()) {
-            g_thread_ready_queue.push_front(t->current_priority, handle);
-        } else {
-            g_thread_ready_queue.push_back(t->current_priority, handle);
-        }
-        t->status = THREADSTATUS_READY;
-    }
-}
-
-/// Verify that a thread has not been released from waiting
-inline bool VerifyWait(const Handle& handle, WaitType type, Handle wait_handle) {
-    Thread* thread = g_object_pool.GetFast<Thread>(handle);
-    _assert_msg_(KERNEL, (thread != nullptr), "called, but thread is nullptr!");
-
-    if (type != thread->wait_type || wait_handle != thread->wait_handle) 
+/**
+ * Check if a thread is waiting on the specified wait object
+ * @param thread The thread to test
+ * @param wait_object The object to test against
+ * @return True if the thread is waiting, false otherwise
+ */
+static bool CheckWait_WaitObject(const Thread* thread, WaitObject* wait_object) {
+    if (thread->status != THREADSTATUS_WAIT_SYNCH)
         return false;
 
-    return true;
+    auto itr = std::find(thread->wait_objects.begin(), thread->wait_objects.end(), wait_object);
+    return itr != thread->wait_objects.end();
 }
 
-/// Stops the current thread
-void StopThread(Handle handle, const char* reason) {
-    Thread* thread = g_object_pool.GetFast<Thread>(handle);
-    _assert_msg_(KERNEL, (thread != nullptr), "called, but thread is nullptr!");
-    
-    ChangeReadyState(thread, false);
-    thread->status = THREADSTATUS_DORMANT;
-    for (size_t i = 0; i < thread->waiting_threads.size(); ++i) {
-        const Handle waiting_thread = thread->waiting_threads[i];
-        if (VerifyWait(waiting_thread, WAITTYPE_THREADEND, handle)) {
-            ResumeThreadFromWait(waiting_thread);
-        }
-    }
-    thread->waiting_threads.clear();
-
-    // Stopped threads are never waiting.
-    thread->wait_type = WAITTYPE_NONE;
-    thread->wait_handle = 0;
+/**
+ * Check if the specified thread is waiting on the specified address to be arbitrated
+ * @param thread The thread to test
+ * @param wait_address The address to test against
+ * @return True if the thread is waiting, false otherwise
+ */
+static bool CheckWait_AddressArbiter(const Thread* thread, VAddr wait_address) {
+    return thread->status == THREADSTATUS_WAIT_ARB && wait_address == thread->wait_address;
 }
 
-/// Changes a threads state
-void ChangeThreadState(Thread* t, ThreadStatus new_status) {
-    if (!t || t->status == new_status) {
-        return;
+void Thread::Stop() {
+    // Release all the mutexes that this thread holds
+    ReleaseThreadMutexes(this);
+
+    // Cancel any outstanding wakeup events for this thread
+    CoreTiming::UnscheduleEvent(ThreadWakeupEventType, callback_handle);
+    wakeup_callback_handle_table.Close(callback_handle);
+    callback_handle = 0;
+
+    // Clean up thread from ready queue
+    // This is only needed when the thread is termintated forcefully (SVC TerminateProcess)
+    if (status == THREADSTATUS_READY){
+        ready_queue.remove(current_priority, this);
     }
-    ChangeReadyState(t, (new_status & THREADSTATUS_READY) != 0);
-    t->status = new_status;
-    
-    if (new_status == THREADSTATUS_WAIT) {
-        if (t->wait_type == WAITTYPE_NONE) {
-            ERROR_LOG(KERNEL, "Waittype none not allowed");
-        }
+
+    status = THREADSTATUS_DEAD;
+
+    WakeupAllWaitingThreads();
+
+    // Clean up any dangling references in objects that this thread was waiting for
+    for (auto& wait_object : wait_objects) {
+        wait_object->RemoveWaitingThread(this);
     }
+    wait_objects.clear();
+
+    Kernel::g_current_process->used_tls_slots[tls_index] = false;
+    g_current_process->misc_memory_used -= Memory::TLS_ENTRY_SIZE;
+
+    HLE::Reschedule(__func__);
 }
 
-/// Arbitrate the highest priority thread that is waiting
-Handle ArbitrateHighestPriorityThread(u32 arbiter, u32 address) {
-    Handle highest_priority_thread = 0;
+Thread* ArbitrateHighestPriorityThread(u32 address) {
+    Thread* highest_priority_thread = nullptr;
     s32 priority = THREADPRIO_LOWEST;
 
     // Iterate through threads, find highest priority thread that is waiting to be arbitrated...
-    for (const auto& handle : g_thread_queue) {
-
-        // TODO(bunnei): Verify arbiter address...
-        if (!VerifyWait(handle, WAITTYPE_ARB, arbiter))
+    for (auto& thread : thread_list) {
+        if (!CheckWait_AddressArbiter(thread.get(), address))
             continue;
 
-        Thread* thread = g_object_pool.GetFast<Thread>(handle);
+        if (thread == nullptr)
+            continue;
+
         if(thread->current_priority <= priority) {
-            highest_priority_thread = handle;
+            highest_priority_thread = thread.get();
             priority = thread->current_priority;
         }
     }
+
     // If a thread was arbitrated, resume it
-    if (0 != highest_priority_thread)
-        ResumeThreadFromWait(highest_priority_thread);
+    if (nullptr != highest_priority_thread) {
+        highest_priority_thread->ResumeFromWait();
+    }
 
     return highest_priority_thread;
 }
 
-/// Arbitrate all threads currently waiting
-void ArbitrateAllThreads(u32 arbiter, u32 address) {
-    
-    // Iterate through threads, find highest priority thread that is waiting to be arbitrated...
-    for (const auto& handle : g_thread_queue) {
-
-        // TODO(bunnei): Verify arbiter address...
-        if (VerifyWait(handle, WAITTYPE_ARB, arbiter))
-            ResumeThreadFromWait(handle);
+void ArbitrateAllThreads(u32 address) {
+    // Resume all threads found to be waiting on the address
+    for (auto& thread : thread_list) {
+        if (CheckWait_AddressArbiter(thread.get(), address))
+            thread->ResumeFromWait();
     }
 }
 
-/// Calls a thread by marking it as "ready" (note: will not actually execute until current thread yields)
-void CallThread(Thread* t) {
-    // Stop waiting
-    if (t->wait_type != WAITTYPE_NONE) {
-        t->wait_type = WAITTYPE_NONE;
-    }
-    ChangeThreadState(t, THREADSTATUS_READY);
-}
+/// Boost low priority threads (temporarily) that have been starved
+static void PriorityBoostStarvedThreads() {
+    u64 current_ticks = CoreTiming::GetTicks();
 
-/// Switches CPU context to that of the specified thread
-void SwitchContext(Thread* t) {
-    Thread* cur = GetCurrentThread();
-    
-    // Save context for current thread
-    if (cur) {
-        SaveContext(cur->context);
-        
-        if (cur->IsRunning()) {
-            ChangeReadyState(cur, true);
+    for (auto& thread : thread_list) {
+        // TODO(bunnei): Threads that have been waiting to be scheduled for `boost_ticks` (or
+        // longer) will have their priority temporarily adjusted to 1 higher than the highest
+        // priority thread to prevent thread starvation. This general behavior has been verified
+        // on hardware. However, this is almost certainly not perfect, and the real CTR OS scheduler
+        // should probably be reversed to verify this.
+
+        const u64 boost_timeout = 2000000;  // Boost threads that have been ready for > this long
+
+        u64 delta = current_ticks - thread->last_running_ticks;
+
+        if (thread->status == THREADSTATUS_READY && delta > boost_timeout) {
+            const s32 priority = std::max(ready_queue.get_first()->current_priority - 1, 0);
+            thread->BoostPriority(priority);
         }
     }
-    // Load context of new thread
-    if (t) {
-        SetCurrentThread(t);
-        ChangeReadyState(t, false);
-        t->status = (t->status | THREADSTATUS_RUNNING) & ~THREADSTATUS_READY;
-        t->wait_type = WAITTYPE_NONE;
-        LoadContext(t->context);
-    } else {
-        SetCurrentThread(nullptr);
-    }
-}
-
-/// Gets the next thread that is ready to be run by priority
-Thread* NextThread() {
-    Handle next;
-    Thread* cur = GetCurrentThread();
-    
-    if (cur && cur->IsRunning()) {
-        next = g_thread_ready_queue.pop_first_better(cur->current_priority);
-    } else  {
-        next = g_thread_ready_queue.pop_first();
-    }
-    if (next == 0) {
-        return nullptr;
-    }
-    return Kernel::g_object_pool.GetFast<Thread>(next);
 }
 
 /**
- * Puts the current thread in the wait state for the given type
- * @param wait_type Type of wait
- * @param wait_handle Handle of Kernel object that we are waiting on, defaults to current thread
+ * Switches the CPU's active thread context to that of the specified thread
+ * @param new_thread The thread to switch to
  */
-void WaitCurrentThread(WaitType wait_type, Handle wait_handle) {
-    Thread* thread = GetCurrentThread();
-    thread->wait_type = wait_type;
-    thread->wait_handle = wait_handle;
-    ChangeThreadState(thread, ThreadStatus(THREADSTATUS_WAIT | (thread->status & THREADSTATUS_SUSPEND)));
-}
+static void SwitchContext(Thread* new_thread) {
+    Thread* previous_thread = GetCurrentThread();
 
-/// Resumes a thread from waiting by marking it as "ready"
-void ResumeThreadFromWait(Handle handle) {
-    u32 error;
-    Thread* thread = Kernel::g_object_pool.Get<Thread>(handle, error);
-    if (thread) {
-        thread->status &= ~THREADSTATUS_WAIT;
-        if (!(thread->status & (THREADSTATUS_WAITSUSPEND | THREADSTATUS_DORMANT | THREADSTATUS_DEAD))) {
-            ChangeReadyState(thread, true);
+    // Save context for previous thread
+    if (previous_thread) {
+        previous_thread->last_running_ticks = CoreTiming::GetTicks();
+        Core::g_app_core->SaveContext(previous_thread->context);
+
+        if (previous_thread->status == THREADSTATUS_RUNNING) {
+            // This is only the case when a reschedule is triggered without the current thread
+            // yielding execution (i.e. an event triggered, system core time-sliced, etc)
+            ready_queue.push_front(previous_thread->current_priority, previous_thread);
+            previous_thread->status = THREADSTATUS_READY;
         }
+    }
+
+    // Load context of new thread
+    if (new_thread) {
+        DEBUG_ASSERT_MSG(new_thread->status == THREADSTATUS_READY, "Thread must be ready to become running.");
+
+        // Cancel any outstanding wakeup events for this thread
+        CoreTiming::UnscheduleEvent(ThreadWakeupEventType, new_thread->callback_handle);
+
+        current_thread = new_thread;
+
+        // If the thread was waited by a svcWaitSynch call, step back PC by one instruction to rerun
+        // the SVC when the thread wakes up. This is necessary to ensure that the thread can acquire
+        // the requested wait object(s) before continuing.
+        if (new_thread->waitsynch_waited) {
+            // CPSR flag indicates CPU mode
+            bool thumb_mode = (new_thread->context.cpsr & TBIT) != 0;
+
+            // SVC instruction is 2 bytes for THUMB, 4 bytes for ARM
+            new_thread->context.pc -= thumb_mode ? 2 : 4;
+        }
+
+        // Clean up the thread's wait_objects, they'll be restored if needed during
+        // the svcWaitSynchronization call
+        for (int i = 0; i < new_thread->wait_objects.size(); ++i) {
+            SharedPtr<WaitObject> object = new_thread->wait_objects[i];
+            object->RemoveWaitingThread(new_thread);
+        }
+        new_thread->wait_objects.clear();
+
+        ready_queue.remove(new_thread->current_priority, new_thread);
+        new_thread->status = THREADSTATUS_RUNNING;
+
+        // Restores thread to its nominal priority if it has been temporarily changed
+        new_thread->current_priority = new_thread->nominal_priority;
+
+        Core::g_app_core->LoadContext(new_thread->context);
+        Core::g_app_core->SetCP15Register(CP15_THREAD_URO, new_thread->GetTLSAddress());
+    } else {
+        current_thread = nullptr;
     }
 }
 
-/// Prints the thread queue for debugging purposes
-void DebugThreadQueue() {
+/**
+ * Pops and returns the next thread from the thread queue
+ * @return A pointer to the next ready thread
+ */
+static Thread* PopNextReadyThread() {
+    Thread* next;
     Thread* thread = GetCurrentThread();
-    if (!thread) {
+
+    if (thread && thread->status == THREADSTATUS_RUNNING) {
+        // We have to do better than the current thread.
+        // This call returns null when that's not possible.
+        next = ready_queue.pop_first_better(thread->current_priority);
+        if (!next) {
+            // Otherwise just keep going with the current thread
+            next = thread;
+        }
+    } else  {
+        next = ready_queue.pop_first();
+    }
+
+    return next;
+}
+
+void WaitCurrentThread_Sleep() {
+    Thread* thread = GetCurrentThread();
+    thread->status = THREADSTATUS_WAIT_SLEEP;
+
+    HLE::Reschedule(__func__);
+}
+
+void WaitCurrentThread_WaitSynchronization(std::vector<SharedPtr<WaitObject>> wait_objects, bool wait_set_output, bool wait_all) {
+    Thread* thread = GetCurrentThread();
+    thread->wait_set_output = wait_set_output;
+    thread->wait_all = wait_all;
+    thread->wait_objects = std::move(wait_objects);
+    thread->waitsynch_waited = true;
+    thread->status = THREADSTATUS_WAIT_SYNCH;
+}
+
+void WaitCurrentThread_ArbitrateAddress(VAddr wait_address) {
+    Thread* thread = GetCurrentThread();
+    thread->wait_address = wait_address;
+    thread->status = THREADSTATUS_WAIT_ARB;
+}
+
+/**
+ * Callback that will wake up the thread it was scheduled for
+ * @param thread_handle The handle of the thread that's been awoken
+ * @param cycles_late The number of CPU cycles that have passed since the desired wakeup time
+ */
+static void ThreadWakeupCallback(u64 thread_handle, int cycles_late) {
+    SharedPtr<Thread> thread = wakeup_callback_handle_table.Get<Thread>((Handle)thread_handle);
+    if (thread == nullptr) {
+        LOG_CRITICAL(Kernel, "Callback fired for invalid thread %08X", (Handle)thread_handle);
         return;
     }
-    INFO_LOG(KERNEL, "0x%02X 0x%08X (current)", thread->current_priority, GetCurrentThreadHandle());
-    for (u32 i = 0; i < g_thread_queue.size(); i++) {
-        Handle handle = g_thread_queue[i];
-        s32 priority = g_thread_ready_queue.contains(handle);
+
+    thread->waitsynch_waited = false;
+
+    if (thread->status == THREADSTATUS_WAIT_SYNCH) {
+        thread->SetWaitSynchronizationResult(ResultCode(ErrorDescription::Timeout, ErrorModule::OS,
+                                                        ErrorSummary::StatusChanged, ErrorLevel::Info));
+
+        if (thread->wait_set_output)
+            thread->SetWaitSynchronizationOutput(-1);
+    }
+
+    thread->ResumeFromWait();
+}
+
+void Thread::WakeAfterDelay(s64 nanoseconds) {
+    // Don't schedule a wakeup if the thread wants to wait forever
+    if (nanoseconds == -1)
+        return;
+
+    u64 microseconds = nanoseconds / 1000;
+    CoreTiming::ScheduleEvent(usToCycles(microseconds), ThreadWakeupEventType, callback_handle);
+}
+
+void Thread::ResumeFromWait() {
+    switch (status) {
+        case THREADSTATUS_WAIT_SYNCH:
+        case THREADSTATUS_WAIT_ARB:
+        case THREADSTATUS_WAIT_SLEEP:
+            break;
+
+        case THREADSTATUS_READY:
+            // If the thread is waiting on multiple wait objects, it might be awoken more than once
+            // before actually resuming. We can ignore subsequent wakeups if the thread status has
+            // already been set to THREADSTATUS_READY.
+            return;
+
+        case THREADSTATUS_RUNNING:
+            DEBUG_ASSERT_MSG(false, "Thread with object id %u has already resumed.", GetObjectId());
+            return;
+        case THREADSTATUS_DEAD:
+            // This should never happen, as threads must complete before being stopped.
+            DEBUG_ASSERT_MSG(false, "Thread with object id %u cannot be resumed because it's DEAD.",
+                GetObjectId());
+            return;
+    }
+
+    ready_queue.push_back(current_priority, this);
+    status = THREADSTATUS_READY;
+}
+
+/**
+ * Prints the thread queue for debugging purposes
+ */
+static void DebugThreadQueue() {
+    Thread* thread = GetCurrentThread();
+    if (!thread) {
+        LOG_DEBUG(Kernel, "Current: NO CURRENT THREAD");
+    } else {
+        LOG_DEBUG(Kernel, "0x%02X %u (current)", thread->current_priority, GetCurrentThread()->GetObjectId());
+    }
+
+    for (auto& t : thread_list) {
+        s32 priority = ready_queue.contains(t.get());
         if (priority != -1) {
-            INFO_LOG(KERNEL, "0x%02X 0x%08X", priority, handle);
+            LOG_DEBUG(Kernel, "0x%02X %u", priority, t->GetObjectId());
         }
     }
 }
 
-/// Creates a new thread
-Thread* CreateThread(Handle& handle, const char* name, u32 entry_point, s32 priority,
-    s32 processor_id, u32 stack_top, int stack_size) {
+ResultVal<SharedPtr<Thread>> Thread::Create(std::string name, VAddr entry_point, s32 priority,
+        u32 arg, s32 processor_id, VAddr stack_top) {
+    if (priority < THREADPRIO_HIGHEST || priority > THREADPRIO_LOWEST) {
+        s32 new_priority = MathUtil::Clamp<s32>(priority, THREADPRIO_HIGHEST, THREADPRIO_LOWEST);
+        LOG_WARNING(Kernel_SVC, "(name=%s): invalid priority=%d, clamping to %d",
+            name.c_str(), priority, new_priority);
+        // TODO(bunnei): Clamping to a valid priority is not necessarily correct behavior... Confirm
+        // validity of this
+        priority = new_priority;
+    }
 
-    _assert_msg_(KERNEL, (priority >= THREADPRIO_HIGHEST && priority <= THREADPRIO_LOWEST), 
-        "CreateThread priority=%d, outside of allowable range!", priority)
+    if (!Memory::GetPointer(entry_point)) {
+        LOG_ERROR(Kernel_SVC, "(name=%s): invalid entry %08x", name.c_str(), entry_point);
+        // TODO: Verify error
+        return ResultCode(ErrorDescription::InvalidAddress, ErrorModule::Kernel,
+                ErrorSummary::InvalidArgument, ErrorLevel::Permanent);
+    }
 
-    Thread* thread = new Thread;
+    SharedPtr<Thread> thread(new Thread);
 
-    handle = Kernel::g_object_pool.Create(thread);
+    thread_list.push_back(thread);
+    ready_queue.prepare(priority);
 
-    g_thread_queue.push_back(handle);
-    g_thread_ready_queue.prepare(priority);
-
+    thread->thread_id = NewThreadId();
     thread->status = THREADSTATUS_DORMANT;
     thread->entry_point = entry_point;
     thread->stack_top = stack_top;
-    thread->stack_size = stack_size;
-    thread->initial_priority = thread->current_priority = priority;
+    thread->nominal_priority = thread->current_priority = priority;
+    thread->last_running_ticks = CoreTiming::GetTicks();
     thread->processor_id = processor_id;
-    thread->wait_type = WAITTYPE_NONE;
-    thread->wait_handle = 0;
-    thread->name = name;
+    thread->wait_set_output = false;
+    thread->wait_all = false;
+    thread->wait_objects.clear();
+    thread->wait_address = 0;
+    thread->name = std::move(name);
+    thread->callback_handle = wakeup_callback_handle_table.Create(thread).MoveFrom();
+    thread->owner_process = g_current_process;
+    thread->tls_index = -1;
+    thread->waitsynch_waited = false;
+
+    // Find the next available TLS index, and mark it as used
+    auto& used_tls_slots = Kernel::g_current_process->used_tls_slots;
+    for (unsigned int i = 0; i < used_tls_slots.size(); ++i) {
+        if (used_tls_slots[i] == false) {
+            thread->tls_index = i;
+            used_tls_slots[i] = true;
+            break;
+        }
+    }
+
+    ASSERT_MSG(thread->tls_index != -1, "Out of TLS space");
+    g_current_process->misc_memory_used += Memory::TLS_ENTRY_SIZE;
+
+    // TODO(peachum): move to ScheduleThread() when scheduler is added so selected core is used
+    // to initialize the context
+    Core::g_app_core->ResetContext(thread->context, stack_top, entry_point, arg);
+
+    ready_queue.push_back(thread->current_priority, thread.get());
+    thread->status = THREADSTATUS_READY;
+
+    HLE::Reschedule(__func__);
+
+    return MakeResult<SharedPtr<Thread>>(std::move(thread));
+}
+
+// TODO(peachum): Remove this. Range checking should be done, and an appropriate error should be returned.
+static void ClampPriority(const Thread* thread, s32* priority) {
+    if (*priority < THREADPRIO_HIGHEST || *priority > THREADPRIO_LOWEST) {
+        DEBUG_ASSERT_MSG(false, "Application passed an out of range priority. An error should be returned.");
+
+        s32 new_priority = MathUtil::Clamp<s32>(*priority, THREADPRIO_HIGHEST, THREADPRIO_LOWEST);
+        LOG_WARNING(Kernel_SVC, "(name=%s): invalid priority=%d, clamping to %d",
+                    thread->name.c_str(), *priority, new_priority);
+        // TODO(bunnei): Clamping to a valid priority is not necessarily correct behavior... Confirm
+        // validity of this
+        *priority = new_priority;
+    }
+}
+
+void Thread::SetPriority(s32 priority) {
+    ClampPriority(this, &priority);
+
+    // If thread was ready, adjust queues
+    if (status == THREADSTATUS_READY)
+        ready_queue.move(this, current_priority, priority);
+    else
+        ready_queue.prepare(priority);
+
+    nominal_priority = current_priority = priority;
+}
+
+void Thread::BoostPriority(s32 priority) {
+    ready_queue.move(this, current_priority, priority);
+    current_priority = priority;
+}
+
+SharedPtr<Thread> SetupMainThread(u32 entry_point, s32 priority) {
+    DEBUG_ASSERT(!GetCurrentThread());
+
+    // Initialize new "main" thread
+    auto thread_res = Thread::Create("main", entry_point, priority, 0,
+            THREADPROCESSORID_0, Memory::HEAP_VADDR_END);
+
+    SharedPtr<Thread> thread = thread_res.MoveFrom();
+
+    // Run new "main" thread
+    SwitchContext(thread.get());
 
     return thread;
 }
 
-/// Creates a new thread - wrapper for external user
-Handle CreateThread(const char* name, u32 entry_point, s32 priority, u32 arg, s32 processor_id,
-    u32 stack_top, int stack_size) {
-
-    if (name == nullptr) {
-        ERROR_LOG(KERNEL, "CreateThread(): nullptr name");
-        return -1;
-    }
-    if ((u32)stack_size < 0x200) {
-        ERROR_LOG(KERNEL, "CreateThread(name=%s): invalid stack_size=0x%08X", name, 
-            stack_size);
-        return -1;
-    }
-    if (priority < THREADPRIO_HIGHEST || priority > THREADPRIO_LOWEST) {
-        s32 new_priority = CLAMP(priority, THREADPRIO_HIGHEST, THREADPRIO_LOWEST);
-        WARN_LOG(KERNEL, "CreateThread(name=%s): invalid priority=0x%08X, clamping to %08X",
-            name, priority, new_priority);
-        // TODO(bunnei): Clamping to a valid priority is not necessarily correct behavior... Confirm
-        // validity of this
-        priority = new_priority;
-    }
-    if (!Memory::GetPointer(entry_point)) {
-        ERROR_LOG(KERNEL, "CreateThread(name=%s): invalid entry %08x", name, entry_point);
-        return -1;
-    }
-    Handle handle;
-    Thread* thread = CreateThread(handle, name, entry_point, priority, processor_id, stack_top, 
-        stack_size);
-
-    ResetThread(thread, arg, 0);
-    CallThread(thread);
-
-    return handle;
-}
-
-/// Get the priority of the thread specified by handle
-u32 GetThreadPriority(const Handle handle) {
-    Thread* thread = g_object_pool.GetFast<Thread>(handle);
-    _assert_msg_(KERNEL, (thread != nullptr), "called, but thread is nullptr!");
-    return thread->current_priority;
-}
-
-/// Set the priority of the thread specified by handle
-Result SetThreadPriority(Handle handle, s32 priority) {
-    Thread* thread = nullptr;
-    if (!handle) {
-        thread = GetCurrentThread(); // TODO(bunnei): Is this correct behavior?
-    } else {
-        thread = g_object_pool.GetFast<Thread>(handle);
-    }
-    _assert_msg_(KERNEL, (thread != nullptr), "called, but thread is nullptr!");
-
-    // If priority is invalid, clamp to valid range
-    if (priority < THREADPRIO_HIGHEST || priority > THREADPRIO_LOWEST) {
-        s32 new_priority = CLAMP(priority, THREADPRIO_HIGHEST, THREADPRIO_LOWEST);
-        WARN_LOG(KERNEL, "invalid priority=0x%08X, clamping to %08X", priority, new_priority);
-        // TODO(bunnei): Clamping to a valid priority is not necessarily correct behavior... Confirm
-        // validity of this
-        priority = new_priority;
-    }
-
-    // Change thread priority
-    s32 old = thread->current_priority;
-    g_thread_ready_queue.remove(old, handle);
-    thread->current_priority = priority;
-    g_thread_ready_queue.prepare(thread->current_priority);
-
-    // Change thread status to "ready" and push to ready queue
-    if (thread->IsRunning()) {
-        thread->status = (thread->status & ~THREADSTATUS_RUNNING) | THREADSTATUS_READY;
-    }
-    if (thread->IsReady()) {
-        g_thread_ready_queue.push_back(thread->current_priority, handle);
-    }
-
-    return 0;
-}
-
-/// Sets up the primary application thread
-Handle SetupMainThread(s32 priority, int stack_size) {
-    Handle handle;
-    
-    // Initialize new "main" thread
-    Thread* thread = CreateThread(handle, "main", Core::g_app_core->GetPC(), priority, 
-        THREADPROCESSORID_0, Memory::SCRATCHPAD_VADDR_END, stack_size);
-    
-    ResetThread(thread, 0, 0);
-    
-    // If running another thread already, set it to "ready" state
-    Thread* cur = GetCurrentThread();
-    if (cur && cur->IsRunning()) {
-        ChangeReadyState(cur, true);
-    }
-    
-    // Run new "main" thread
-    SetCurrentThread(thread);
-    thread->status = THREADSTATUS_RUNNING;
-    LoadContext(thread->context);
-
-    return handle;
-}
-
-
-/// Reschedules to the next available thread (call after current thread is suspended)
 void Reschedule() {
-    Thread* prev = GetCurrentThread();
-    Thread* next = NextThread();
-    HLE::g_reschedule = false;
-    if (next > 0) {
-        INFO_LOG(KERNEL, "context switch 0x%08X -> 0x%08X", prev->GetHandle(), next->GetHandle());
-        
-        SwitchContext(next);
+    PriorityBoostStarvedThreads();
 
-        // Hack - There is no mechanism yet to waken the primary thread if it has been put to sleep
-        // by a simulated VBLANK thread switch. So, we'll just immediately set it to "ready" again.
-        // This results in the current thread yielding on a VBLANK once, and then it will be 
-        // immediately placed back in the queue for execution.
-        if (prev->wait_type == WAITTYPE_VBLANK) {
-            ResumeThreadFromWait(prev->GetHandle());
-        }
+    Thread* cur = GetCurrentThread();
+    Thread* next = PopNextReadyThread();
+    HLE::g_reschedule = false;
+
+    // Don't bother switching to the same thread
+    if (next == cur)
+        return;
+
+    if (cur && next) {
+        LOG_TRACE(Kernel, "context switch %u -> %u", cur->GetObjectId(), next->GetObjectId());
+    } else if (cur) {
+        LOG_TRACE(Kernel, "context switch %u -> idle", cur->GetObjectId());
+    } else if (next) {
+        LOG_TRACE(Kernel, "context switch idle -> %u", next->GetObjectId());
     }
+
+    SwitchContext(next);
+}
+
+void Thread::SetWaitSynchronizationResult(ResultCode result) {
+    context.cpu_registers[0] = result.raw;
+}
+
+void Thread::SetWaitSynchronizationOutput(s32 output) {
+    context.cpu_registers[1] = output;
+}
+
+VAddr Thread::GetTLSAddress() const {
+    return Memory::TLS_AREA_VADDR + tls_index * Memory::TLS_ENTRY_SIZE;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void ThreadingInit() {
+    ThreadWakeupEventType = CoreTiming::RegisterEvent("ThreadWakeupCallback", ThreadWakeupCallback);
+
+    current_thread = nullptr;
+    next_thread_id = 1;
 }
 
 void ThreadingShutdown() {
+    current_thread = nullptr;
+
+    for (auto& t : thread_list) {
+        t->Stop();
+    }
+    thread_list.clear();
+    ready_queue.clear();
 }
 
 } // namespace

@@ -1,49 +1,36 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include "core/core.h"
 #include "core/core_timing.h"
-#include "core/mem_map.h"
 #include "core/system.h"
 #include "core/hw/hw.h"
 #include "core/hle/hle.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/memory.h"
 
 #include "video_core/video_core.h"
 
 namespace System {
 
-volatile State g_state;
-
-void UpdateState(State state) {
-}
-
 void Init(EmuWindow* emu_window) {
     Core::Init();
+    CoreTiming::Init();
     Memory::Init();
     HW::Init();
-    HLE::Init();
-    CoreTiming::Init();
-    VideoCore::Init(emu_window);
     Kernel::Init();
-}
-
-void RunLoopFor(int cycles) {
-    RunLoopUntil(CoreTiming::GetTicks() + cycles);
-}
-
-void RunLoopUntil(u64 global_cycles) {
+    HLE::Init();
+    VideoCore::Init(emu_window);
 }
 
 void Shutdown() {
-    Core::Shutdown();
-    Memory::Shutdown();
-    HW::Shutdown();
-    HLE::Shutdown();
-    CoreTiming::Shutdown();
     VideoCore::Shutdown();
+    HLE::Shutdown();
     Kernel::Shutdown();
+    HW::Shutdown();
+    CoreTiming::Shutdown();
+    Core::Shutdown();
 }
 
 } // namespace

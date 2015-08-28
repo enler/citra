@@ -1,88 +1,125 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common.h"
+#include <algorithm>
+#include <cstdlib>
+#include <string>
+
+// Let’s use our own GL header, instead of one from GLFW.
+#include "video_core/renderer_opengl/generated/gl_3_2_core.h"
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+
+#include "common/assert.h"
+#include "common/key_map.h"
+#include "common/logging/log.h"
+#include "common/scm_rev.h"
+#include "common/string_util.h"
 
 #include "video_core/video_core.h"
 
+#include "core/settings.h"
+#include "core/hle/service/hid/hid.h"
+
 #include "citra/emu_window/emu_window_glfw.h"
 
-static const std::pair<int, HID_User::PadState> default_key_map[] = {
-    { GLFW_KEY_A, HID_User::PAD_A },
-    { GLFW_KEY_B, HID_User::PAD_B },
-    { GLFW_KEY_BACKSLASH, HID_User::PAD_SELECT },
-    { GLFW_KEY_ENTER, HID_User::PAD_START },
-    { GLFW_KEY_RIGHT, HID_User::PAD_RIGHT },
-    { GLFW_KEY_LEFT, HID_User::PAD_LEFT },
-    { GLFW_KEY_UP, HID_User::PAD_UP },
-    { GLFW_KEY_DOWN, HID_User::PAD_DOWN },
-    { GLFW_KEY_R, HID_User::PAD_R },
-    { GLFW_KEY_L, HID_User::PAD_L },
-    { GLFW_KEY_X, HID_User::PAD_X },
-    { GLFW_KEY_Y, HID_User::PAD_Y },
-    { GLFW_KEY_H, HID_User::PAD_CIRCLE_RIGHT },
-    { GLFW_KEY_F, HID_User::PAD_CIRCLE_LEFT },
-    { GLFW_KEY_T, HID_User::PAD_CIRCLE_UP },
-    { GLFW_KEY_G, HID_User::PAD_CIRCLE_DOWN },
-};
+EmuWindow_GLFW* EmuWindow_GLFW::GetEmuWindow(GLFWwindow* win) {
+    return static_cast<EmuWindow_GLFW*>(glfwGetWindowUserPointer(win));
+}
+
+void EmuWindow_GLFW::OnMouseButtonEvent(GLFWwindow* win, int button, int action, int mods) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        auto emu_window = GetEmuWindow(win);
+        auto layout = emu_window->GetFramebufferLayout();
+        double x, y;
+        glfwGetCursorPos(win, &x, &y);
+
+        if (action == GLFW_PRESS)
+            emu_window->TouchPressed(static_cast<unsigned>(x), static_cast<unsigned>(y));
+        else if (action == GLFW_RELEASE)
+            emu_window->TouchReleased();
+    }
+}
+
+void EmuWindow_GLFW::OnCursorPosEvent(GLFWwindow* win, double x, double y) {
+    GetEmuWindow(win)->TouchMoved(static_cast<unsigned>(std::max(x, 0.0)), static_cast<unsigned>(std::max(y, 0.0)));
+}
 
 /// Called by GLFW when a key event occurs
 void EmuWindow_GLFW::OnKeyEvent(GLFWwindow* win, int key, int scancode, int action, int mods) {
-
-    if (!VideoCore::g_emu_window) {
-        return;
-    }
-
-    int keyboard_id = ((EmuWindow_GLFW*)VideoCore::g_emu_window)->keyboard_id;
+    auto emu_window = GetEmuWindow(win);
+    int keyboard_id = emu_window->keyboard_id;
 
     if (action == GLFW_PRESS) {
-        EmuWindow::KeyPressed({key, keyboard_id});
+        emu_window->KeyPressed({key, keyboard_id});
+    } else if (action == GLFW_RELEASE) {
+        emu_window->KeyReleased({key, keyboard_id});
     }
+}
 
-    if (action == GLFW_RELEASE) {
-        EmuWindow::KeyReleased({key, keyboard_id});
-    }
-    HID_User::PadUpdateComplete();
+/// Whether the window is still open, and a close request hasn't yet been sent
+const bool EmuWindow_GLFW::IsOpen() {
+    return glfwWindowShouldClose(m_render_window) == 0;
+}
+
+void EmuWindow_GLFW::OnFramebufferResizeEvent(GLFWwindow* win, int width, int height) {
+    GetEmuWindow(win)->NotifyFramebufferLayoutChanged(EmuWindow::FramebufferLayout::DefaultScreenLayout(width, height));
+}
+
+void EmuWindow_GLFW::OnClientAreaResizeEvent(GLFWwindow* win, int width, int height) {
+    // NOTE: GLFW provides no proper way to set a minimal window size.
+    //       Hence, we just ignore the corresponding EmuWindow hint.
+    OnFramebufferResizeEvent(win, width, height);
 }
 
 /// EmuWindow_GLFW constructor
 EmuWindow_GLFW::EmuWindow_GLFW() {
-
-    // Register a new ID for the default keyboard
     keyboard_id = KeyMap::NewDeviceId();
 
-    // Set default key mappings for keyboard
-    for (auto mapping : default_key_map) {
-        KeyMap::SetKeyMapping({mapping.first, keyboard_id}, mapping.second);
-    }
+    ReloadSetKeymaps();
+
+    glfwSetErrorCallback([](int error, const char *desc){
+        LOG_ERROR(Frontend, "GLFW 0x%08x: %s", error, desc);
+    });
 
     // Initialize the window
     if(glfwInit() != GL_TRUE) {
-        printf("Failed to initialize GLFW! Exiting...");
+        LOG_CRITICAL(Frontend, "Failed to initialize GLFW! Exiting...");
         exit(1);
     }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-	
-#if EMU_PLATFORM == PLATFORM_MACOSX
     // GLFW on OSX requires these window hints to be set to create a 3.2+ GL context.
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#endif
-	
-    m_render_window = glfwCreateWindow(VideoCore::kScreenTopWidth, 
-        (VideoCore::kScreenTopHeight + VideoCore::kScreenBottomHeight), 
-        m_window_title.c_str(), NULL, NULL);
 
-    if (m_render_window == NULL) {
-        printf("Failed to create GLFW window! Exiting...");
+    std::string window_title = Common::StringFromFormat("Citra | %s-%s", Common::g_scm_branch, Common::g_scm_desc);
+    m_render_window = glfwCreateWindow(VideoCore::kScreenTopWidth,
+        (VideoCore::kScreenTopHeight + VideoCore::kScreenBottomHeight),
+        window_title.c_str(), nullptr, nullptr);
+
+    if (m_render_window == nullptr) {
+        LOG_CRITICAL(Frontend, "Failed to create GLFW window! Exiting...");
         exit(1);
     }
-    
-    // Setup callbacks
+
     glfwSetWindowUserPointer(m_render_window, this);
+
+    // Notify base interface about window state
+    int width, height;
+    glfwGetFramebufferSize(m_render_window, &width, &height);
+    OnFramebufferResizeEvent(m_render_window, width, height);
+
+    glfwGetWindowSize(m_render_window, &width, &height);
+    OnClientAreaResizeEvent(m_render_window, width, height);
+
+    // Setup callbacks
     glfwSetKeyCallback(m_render_window, OnKeyEvent);
+    glfwSetMouseButtonCallback(m_render_window, OnMouseButtonEvent);
+    glfwSetCursorPosCallback(m_render_window, OnCursorPosEvent);
+    glfwSetFramebufferSizeCallback(m_render_window, OnFramebufferResizeEvent);
+    glfwSetWindowSizeCallback(m_render_window, OnClientAreaResizeEvent);
 
     DoneCurrent();
 }
@@ -109,5 +146,23 @@ void EmuWindow_GLFW::MakeCurrent() {
 
 /// Releases (dunno if this is the "right" word) the GLFW context from the caller thread
 void EmuWindow_GLFW::DoneCurrent() {
-    glfwMakeContextCurrent(NULL);
+    glfwMakeContextCurrent(nullptr);
+}
+
+void EmuWindow_GLFW::ReloadSetKeymaps() {
+    for (int i = 0; i < Settings::NativeInput::NUM_INPUTS; ++i) {
+        KeyMap::SetKeyMapping({Settings::values.input_mappings[Settings::NativeInput::All[i]], keyboard_id}, Service::HID::pad_mapping[i]);
+    }
+}
+
+void EmuWindow_GLFW::OnMinimalClientAreaChangeRequest(const std::pair<unsigned,unsigned>& minimal_size) {
+    std::pair<int,int> current_size;
+    glfwGetWindowSize(m_render_window, &current_size.first, &current_size.second);
+
+    DEBUG_ASSERT((int)minimal_size.first > 0 && (int)minimal_size.second > 0);
+    int new_width  = std::max(current_size.first,  (int)minimal_size.first);
+    int new_height = std::max(current_size.second, (int)minimal_size.second);
+
+    if (current_size != std::make_pair(new_width, new_height))
+        glfwSetWindowSize(m_render_window, new_width, new_height);
 }

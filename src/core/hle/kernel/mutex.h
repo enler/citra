@@ -1,8 +1,10 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
-// Refer to the license.txt file included.  
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
 
 #pragma once
+
+#include <string>
 
 #include "common/common_types.h"
 
@@ -10,19 +12,48 @@
 
 namespace Kernel {
 
-/**
- * Releases a mutex
- * @param handle Handle to mutex to release
- * @return Result of operation, 0 on success, otherwise error code
- */
-Result ReleaseMutex(Handle handle);
+class Thread;
+
+class Mutex final : public WaitObject {
+public:
+    /**
+     * Creates a mutex.
+     * @param initial_locked Specifies if the mutex should be locked initially
+     * @param name Optional name of mutex
+     * @return Pointer to new Mutex object
+     */
+    static SharedPtr<Mutex> Create(bool initial_locked, std::string name = "Unknown");
+
+    std::string GetTypeName() const override { return "Mutex"; }
+    std::string GetName() const override { return name; }
+
+    static const HandleType HANDLE_TYPE = HandleType::Mutex;
+    HandleType GetHandleType() const override { return HANDLE_TYPE; }
+
+    int lock_count;                             ///< Number of times the mutex has been acquired
+    std::string name;                           ///< Name of mutex (optional)
+    SharedPtr<Thread> holding_thread;           ///< Thread that has acquired the mutex
+
+    bool ShouldWait() override;
+    void Acquire() override;
+
+    /**
+    * Acquires the specified mutex for the specified thread
+    * @param mutex Mutex that is to be acquired
+    * @param thread Thread that will acquire the mutex
+    */
+    void Acquire(SharedPtr<Thread> thread);
+    void Release();
+
+private:
+    Mutex();
+    ~Mutex() override;
+};
 
 /**
- * Creates a mutex
- * @param initial_locked Specifies if the mutex should be locked initially
- * @param name Optional name of mutex
- * @return Handle to newly created object
+ * Releases all the mutexes held by the specified thread
+ * @param thread Thread that is holding the mutexes
  */
-Handle CreateMutex(bool initial_locked, const std::string& name="Unknown");
+void ReleaseThreadMutexes(Thread* thread);
 
 } // namespace

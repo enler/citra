@@ -1,56 +1,41 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include <algorithm>
-#include <vector>
-#include <map>
+#include <cstddef>
 #include <string>
+#include <unordered_map>
 
-#include "common/common.h"
-#include "core/mem_map.h"
+#include <boost/container/flat_map.hpp>
 
-#include "core/hle/kernel/kernel.h"
-#include "core/hle/svc.h"
+#include "common/common_types.h"
+
+#include "core/hle/kernel/session.h"
+#include "core/hle/result.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Namespace Service
 
 namespace Service {
 
-static const int kMaxPortSize           = 0x08; ///< Maximum size of a port name (8 characters)
-static const int kCommandHeaderOffset   = 0x80; ///< Offset into command buffer of header
-
-/**
- * Returns a pointer to the command buffer in kernel memory
- * @param offset Optional offset into command buffer
- * @return Pointer to command buffer
- */
-inline static u32* GetCommandBuffer(const int offset=0) {
-    return (u32*)Memory::GetPointer(Memory::KERNEL_MEMORY_VADDR + kCommandHeaderOffset + offset);
-}
-
-class Manager;
+static const int kMaxPortSize = 8; ///< Maximum size of a port name (8 characters)
 
 /// Interface to a CTROS service
-class Interface  : public Kernel::Object {
-    friend class Manager;
+class Interface : public Kernel::Session {
+    // TODO(yuriks): An "Interface" being a Kernel::Object is mostly non-sense. Interface should be
+    // just something that encapsulates a session and acts as a helper to implement service
+    // processes.
 public:
-    
-    std::string GetName() const { return GetPortName(); }
-    std::string GetTypeName() const { return GetPortName(); }
-
-    static Kernel::HandleType GetStaticHandleType() { return Kernel::HandleType::Service; }
-    Kernel::HandleType GetHandleType() const { return Kernel::HandleType::Service; }
+    std::string GetName() const override { return GetPortName(); }
 
     typedef void (*Function)(Interface*);
 
     struct FunctionInfo {
         u32         id;
         Function    func;
-        std::string name;
+        const char* name;
     };
 
     /**
@@ -61,106 +46,22 @@ public:
         return "[UNKNOWN SERVICE PORT]";
     }
 
-    /// Allocates a new handle for the service
-    Handle CreateHandle(Kernel::Object *obj) {
-        Handle handle = Kernel::g_object_pool.Create(obj);
-        m_handles.push_back(handle);
-        return handle;
-    }
-
-    /// Frees a handle from the service
-    template <class T>
-    void DeleteHandle(const Handle handle) {
-        Kernel::g_object_pool.Destroy<T>(handle);
-        m_handles.erase(std::remove(m_handles.begin(), m_handles.end(), handle), m_handles.end());
-    }
-
-    /**
-     * Synchronize kernel object 
-     * @param wait Boolean wait set if current thread should wait as a result of sync operation
-     * @return Result of operation, 0 on success, otherwise error code
-     */
-    Result SyncRequest(bool* wait) {
-        u32* cmd_buff = GetCommandBuffer();
-        auto itr = m_functions.find(cmd_buff[0]);
-
-        if (itr == m_functions.end()) {
-            ERROR_LOG(OSHLE, "unknown/unimplemented function: port=%s, command=0x%08X", 
-                GetPortName().c_str(), cmd_buff[0]);
-
-            // TODO(bunnei): Hack - ignore error
-            u32* cmd_buff = Service::GetCommandBuffer();
-            cmd_buff[1] = 0;
-            return 0; 
-        }
-        if (itr->second.func == nullptr) {
-            ERROR_LOG(OSHLE, "unimplemented function: port=%s, name=%s", 
-                GetPortName().c_str(), itr->second.name.c_str());
-
-            // TODO(bunnei): Hack - ignore error
-            u32* cmd_buff = Service::GetCommandBuffer();
-            cmd_buff[1] = 0;
-            return 0; 
-        } 
-
-        itr->second.func(this);
-
-        return 0; // TODO: Implement return from actual function
-    }
-
-    /**
-     * Wait for kernel object to synchronize
-     * @param wait Boolean wait set if current thread should wait as a result of sync operation
-     * @return Result of operation, 0 on success, otherwise error code
-     */
-    Result WaitSynchronization(bool* wait) {
-        // TODO(bunnei): ImplementMe
-        ERROR_LOG(OSHLE, "unimplemented function");
-        return 0;
-    }
+    ResultVal<bool> SyncRequest() override;
 
 protected:
 
     /**
      * Registers the functions in the service
      */
-    void Register(const FunctionInfo* functions, int len) {
-        for (int i = 0; i < len; i++) {
-            m_functions[functions[i].id] = functions[i];
-        }
+    template <size_t N>
+    inline void Register(const FunctionInfo (&functions)[N]) {
+        Register(functions, N);
     }
 
-private:
-
-    std::vector<Handle>         m_handles;
-    std::map<u32, FunctionInfo> m_functions;
-
-};
-
-/// Simple class to manage accessing services from ports and UID handles
-class Manager {
-
-public:
-    Manager();
-
-    ~Manager();
-
-    /// Add a service to the manager (does not create it though)
-    void AddService(Interface* service);
-
-    /// Removes a service from the manager (does not delete it though)
-    void DeleteService(const std::string& port_name);
-
-    /// Get a Service Interface from its UID
-    Interface* FetchFromHandle(u32 uid);
-
-    /// Get a Service Interface from its port
-    Interface* FetchFromPortName(const std::string& port_name);
+    void Register(const FunctionInfo* functions, size_t n);
 
 private:
-
-    std::vector<Interface*>     m_services;
-    std::map<std::string, u32>  m_port_map;
+    boost::container::flat_map<u32, FunctionInfo> m_functions;
 
 };
 
@@ -170,8 +71,12 @@ void Init();
 /// Shutdown ServiceManager
 void Shutdown();
 
+/// Map of named ports managed by the kernel, which can be retrieved using the ConnectToPort SVC.
+extern std::unordered_map<std::string, Kernel::SharedPtr<Interface>> g_kernel_named_ports;
+/// Map of services registered with the "srv:" service, retrieved using GetServiceHandle.
+extern std::unordered_map<std::string, Kernel::SharedPtr<Interface>> g_srv_services;
 
-extern Manager* g_manager; ///< Service manager
-
+/// Adds a service to the services table
+void AddService(Interface* interface_);
 
 } // namespace

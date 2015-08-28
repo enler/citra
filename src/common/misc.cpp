@@ -1,11 +1,14 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include "common/common.h"
+#include <cstddef>
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <cerrno>
+#include <cstring>
 #endif
 
 // Neither Android nor OS X support TLS
@@ -23,9 +26,9 @@ const char* GetLastErrorMsg()
 #ifdef _WIN32
     static __declspec(thread) char err_str[buff_size] = {};
 
-    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(),
+    FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, nullptr, GetLastError(),
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        err_str, buff_size, NULL);
+        err_str, buff_size, nullptr);
 #else
     static __thread char err_str[buff_size] = {};
 

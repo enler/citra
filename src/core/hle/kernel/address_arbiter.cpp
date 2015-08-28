@@ -1,10 +1,11 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #include "common/common_types.h"
+#include "common/logging/log.h"
 
-#include "core/mem_map.h"
+#include "core/memory.h"
 
 #include "core/hle/hle.h"
 #include "core/hle/kernel/address_arbiter.h"
@@ -15,74 +16,73 @@
 
 namespace Kernel {
 
-class AddressArbiter : public Object {
-public:
-    std::string GetTypeName() const { return "Arbiter"; }
-    std::string GetName() const { return name; }
+AddressArbiter::AddressArbiter() {}
+AddressArbiter::~AddressArbiter() {}
 
-    static Kernel::HandleType GetStaticHandleType() { return HandleType::AddressArbiter; }
-    Kernel::HandleType GetHandleType() const { return HandleType::AddressArbiter; }
+SharedPtr<AddressArbiter> AddressArbiter::Create(std::string name) {
+    SharedPtr<AddressArbiter> address_arbiter(new AddressArbiter);
 
-    std::string name;   ///< Name of address arbiter object (optional)
+    address_arbiter->name = std::move(name);
 
-    /**
-     * Wait for kernel object to synchronize
-     * @param wait Boolean wait set if current thread should wait as a result of sync operation
-     * @return Result of operation, 0 on success, otherwise error code
-     */
-    Result WaitSynchronization(bool* wait) {
-        // TODO(bunnei): ImplementMe
-        ERROR_LOG(OSHLE, "(UNIMPLEMENTED)");
-        return 0;
-    }
-};
+    return address_arbiter;
+}
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Arbitrate an address
-Result ArbitrateAddress(Handle handle, ArbitrationType type, u32 address, s32 value) {
+ResultCode AddressArbiter::ArbitrateAddress(ArbitrationType type, VAddr address, s32 value,
+        u64 nanoseconds) {
     switch (type) {
 
     // Signal thread(s) waiting for arbitrate address...
     case ArbitrationType::Signal:
         // Negative value means resume all threads
         if (value < 0) {
-            ArbitrateAllThreads(handle, address);
+            ArbitrateAllThreads(address);
         } else {
             // Resume first N threads
             for(int i = 0; i < value; i++)
-                ArbitrateHighestPriorityThread(handle, address);
+                ArbitrateHighestPriorityThread(address);
         }
         break;
 
     // Wait current thread (acquire the arbiter)...
     case ArbitrationType::WaitIfLessThan:
         if ((s32)Memory::Read32(address) <= value) {
-            Kernel::WaitCurrentThread(WAITTYPE_ARB, handle);
-            HLE::Reschedule(__func__);
+            Kernel::WaitCurrentThread_ArbitrateAddress(address);
         }
         break;
+    case ArbitrationType::WaitIfLessThanWithTimeout:
+        if ((s32)Memory::Read32(address) <= value) {
+            Kernel::WaitCurrentThread_ArbitrateAddress(address);
+            GetCurrentThread()->WakeAfterDelay(nanoseconds);
+        }
+        break;
+    case ArbitrationType::DecrementAndWaitIfLessThan:
+    {
+        s32 memory_value = Memory::Read32(address) - 1;
+        Memory::Write32(address, memory_value);
+        if (memory_value <= value) {
+            Kernel::WaitCurrentThread_ArbitrateAddress(address);
+        }
+        break;
+    }
+    case ArbitrationType::DecrementAndWaitIfLessThanWithTimeout:
+    {
+        s32 memory_value = Memory::Read32(address) - 1;
+        Memory::Write32(address, memory_value);
+        if (memory_value <= value) {
+            Kernel::WaitCurrentThread_ArbitrateAddress(address);
+            GetCurrentThread()->WakeAfterDelay(nanoseconds);
+        }
+        break;
+    }
 
     default:
-        ERROR_LOG(KERNEL, "unknown type=%d", type);
-        return -1;
+        LOG_ERROR(Kernel, "unknown type=%d", type);
+        return ResultCode(ErrorDescription::InvalidEnumValue, ErrorModule::Kernel, ErrorSummary::WrongArgument, ErrorLevel::Usage);
     }
-    return 0;
-}
 
-/// Create an address arbiter
-AddressArbiter* CreateAddressArbiter(Handle& handle, const std::string& name) {
-    AddressArbiter* address_arbiter = new AddressArbiter;
-    handle = Kernel::g_object_pool.Create(address_arbiter);
-    address_arbiter->name = name;
-    return address_arbiter;
-}
+    HLE::Reschedule(__func__);
 
-/// Create an address arbiter
-Handle CreateAddressArbiter(const std::string& name) {
-    Handle handle;
-    CreateAddressArbiter(handle, name);
-    return handle;
+    return RESULT_SUCCESS;
 }
 
 } // namespace Kernel

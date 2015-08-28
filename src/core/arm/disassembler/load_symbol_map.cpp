@@ -1,7 +1,8 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -22,8 +23,8 @@ void LoadSymbolMap(std::string filename) {
 
     while (std::getline(infile, line)) {
         std::istringstream iss(line);
-        if (!(iss >> address_str >> size >> function_name)) { 
-            break; // Error parsing 
+        if (!(iss >> address_str >> size >> function_name)) {
+            break; // Error parsing
         }
         u32 address = std::stoul(address_str, nullptr, 16);
 

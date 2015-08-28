@@ -1,10 +1,10 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
 
-#include "common/common.h"
+#include "common/common_types.h"
 #include <fstream>
 
 // defined in Version.cpp
@@ -64,13 +64,13 @@ public:
         m_file.seekg(0, std::ios::beg);
         std::fstream::pos_type start_pos = m_file.tellg();
         std::streamoff file_size = end_pos - start_pos;
-        
+
         if (m_file.is_open() && ValidateHeader())
         {
             // good header, read some key/value pairs
             K key;
 
-            V *value = NULL;
+            V *value = nullptr;
             u32 value_size;
             u32 entry_number;
 
@@ -87,7 +87,7 @@ public:
 
                 // read key/value and pass to reader
                 if (Read(&key) &&
-                    Read(value, value_size) && 
+                    Read(value, value_size) &&
                     Read(&entry_number) &&
                     entry_number == m_num_entries+1)
                  {
@@ -115,7 +115,7 @@ public:
         WriteHeader();
         return 0;
     }
-    
+
     void Sync()
     {
         m_file.flush();

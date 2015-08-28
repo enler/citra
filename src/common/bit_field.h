@@ -1,4 +1,4 @@
-// Licensed under GPLv2
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 
@@ -32,10 +32,11 @@
 
 #pragma once
 
+#include <cstddef>
 #include <limits>
 #include <type_traits>
 
-#include "common/common.h"
+#include "common/common_funcs.h"
 
 /*
  * Abstract bitfield class
@@ -68,7 +69,7 @@
  *     u32 hex;
  *
  *     BitField<0,7,u32> first_seven_bits;     // unsigned
- *     BitField<7,8,32> next_eight_bits;       // unsigned
+ *     BitField<7,8,u32> next_eight_bits;      // unsigned
  *     BitField<3,15,s32> some_signed_fields;  // signed
  * };
  *
@@ -140,28 +141,38 @@ public:
     BitField& operator=(const BitField&) = delete;
 #endif
 
-    __forceinline BitField& operator=(T val)
+    FORCE_INLINE BitField& operator=(T val)
     {
-        storage = (storage & ~GetMask()) | (((StorageType)val << position) & GetMask());
+        Assign(val);
         return *this;
     }
 
-    __forceinline operator T() const
+    FORCE_INLINE operator T() const
     {
         return Value();
     }
 
-    __forceinline T Value() const
+    FORCE_INLINE void Assign(const T& value) {
+        storage = (storage & ~GetMask()) | (((StorageType)value << position) & GetMask());
+    }
+
+    FORCE_INLINE T Value() const
     {
         if (std::numeric_limits<T>::is_signed)
         {
             std::size_t shift = 8 * sizeof(T)-bits;
-            return (T)(((storage & GetMask()) << (shift - position)) >> shift);
+            return (T)((storage << (shift - position)) >> shift);
         }
         else
         {
             return (T)((storage & GetMask()) >> position);
         }
+    }
+
+    // TODO: we may want to change this to explicit operator bool() if it's bug-free in VS2015
+    FORCE_INLINE bool ToBool() const
+    {
+        return Value() != 0;
     }
 
 private:
@@ -176,9 +187,9 @@ private:
     // Unsigned version of StorageType
     typedef typename std::make_unsigned<StorageType>::type StorageTypeU;
 
-    __forceinline StorageType GetMask() const
+    FORCE_INLINE StorageType GetMask() const
     {
-        return ((~(StorageTypeU)0) >> (8 * sizeof(T)-bits)) << position;
+        return (((StorageTypeU)~0) >> (8 * sizeof(T)-bits)) << position;
     }
 
     StorageType storage;

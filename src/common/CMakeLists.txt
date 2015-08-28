@@ -3,63 +3,75 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/scm_rev.cpp.in" "${CMAKE_CURRENT_SOU
 
 set(SRCS
             break_points.cpp
-            console_listener.cpp
             emu_window.cpp
-            extended_trace.cpp
-            file_search.cpp
             file_util.cpp
             hash.cpp
             key_map.cpp
-            log_manager.cpp
-            math_util.cpp
-            mem_arena.cpp
+            logging/filter.cpp
+            logging/text_formatter.cpp
+            logging/backend.cpp
             memory_util.cpp
+            microprofile.cpp
             misc.cpp
-            msg_handler.cpp
+            profiler.cpp
             scm_rev.cpp
             string_util.cpp
             symbols.cpp
             thread.cpp
             timer.cpp
-            utf8.cpp
             )
 
 set(HEADERS
+            assert.h
             bit_field.h
             break_points.h
             chunk_file.h
-            common.h
+            code_block.h
+            color.h
             common_funcs.h
             common_paths.h
             common_types.h
-            console_listener.h
-            cpu_detect.h
             debug_interface.h
             emu_window.h
-            extended_trace.h
-            fifo_queue.h
-            file_search.h
             file_util.h
             hash.h
             key_map.h
             linear_disk_cache.h
-            log.h
-            log_manager.h
+            logging/text_formatter.h
+            logging/filter.h
+            logging/log.h
+            logging/backend.h
+            make_unique.h
             math_util.h
-            mem_arena.h
             memory_util.h
-            msg_handler.h
+            microprofile.h
+            microprofileui.h
             platform.h
+            profiler.h
+            profiler_reporting.h
             scm_rev.h
+            scope_exit.h
             string_util.h
             swap.h
             symbols.h
+            synchronized_wrapper.h
             thread.h
             thread_queue_list.h
-            thunk.h
             timer.h
-            utf8.h
+            vector_math.h
             )
+
+if(ARCHITECTURE_x86_64)
+    set(SRCS ${SRCS}
+            x64/abi.cpp
+            x64/cpu_detect.cpp
+            x64/emitter.cpp)
+
+    set(HEADERS ${HEADERS}
+            x64/abi.h
+            x64/cpu_detect.h
+            x64/emitter.h)
+endif()
 
 create_directory_groups(${SRCS} ${HEADERS})
 

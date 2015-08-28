@@ -1,42 +1,48 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <cstring>
 #include <string>
 #include <memory>
 
-#include "common/common.h"
+#include "common/common_types.h"
 #include "common/file_util.h"
+#include "common/logging/log.h"
 #include "common/symbols.h"
 
-#include "core/mem_map.h"
+#include "core/hle/kernel/process.h"
+#include "core/hle/kernel/resource_limit.h"
 #include "core/loader/elf.h"
-#include "core/hle/kernel/kernel.h"
+#include "core/memory.h"
+
+using Kernel::SharedPtr;
+using Kernel::CodeSet;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // ELF Header Constants
 
 // File type
 enum ElfType {
-    ET_NONE = 0,
-    ET_REL = 1,
-    ET_EXEC = 2,
-    ET_DYN = 3,
-    ET_CORE = 4,
+    ET_NONE   = 0,
+    ET_REL    = 1,
+    ET_EXEC   = 2,
+    ET_DYN    = 3,
+    ET_CORE   = 4,
     ET_LOPROC = 0xFF00,
     ET_HIPROC = 0xFFFF,
 };
 
 // Machine/Architecture
 enum ElfMachine {
-    EM_NONE = 0,
-    EM_M32 = 1,
+    EM_NONE  = 0,
+    EM_M32   = 1,
     EM_SPARC = 2,
-    EM_386 = 3,
-    EM_68K = 4,
-    EM_88K = 5,
-    EM_860 = 7,
-    EM_MIPS = 8
+    EM_386   = 3,
+    EM_68K   = 4,
+    EM_88K   = 5,
+    EM_860   = 7,
+    EM_MIPS  = 8
 };
 
 // File version
@@ -53,12 +59,6 @@ enum ElfMachine {
 #define EI_VERSION 6
 #define EI_PAD     7
 #define EI_NIDENT 16
-
-// Magic number
-#define ELFMAG0 0x7F
-#define ELFMAG1  'E'
-#define ELFMAG2  'L'
-#define ELFMAG3  'F'
 
 // Sections constants
 
@@ -83,10 +83,10 @@ enum ElfMachine {
 // Section flags
 enum ElfSectionFlags
 {
-    SHF_WRITE = 0x1,
-    SHF_ALLOC = 0x2,
+    SHF_WRITE     = 0x1,
+    SHF_ALLOC     = 0x2,
     SHF_EXECINSTR = 0x4,
-    SHF_MASKPROC = 0xF0000000,
+    SHF_MASKPROC  = 0xF0000000,
 };
 
 // Segment types
@@ -100,11 +100,17 @@ enum ElfSectionFlags
 #define PT_LOPROC  0x70000000
 #define PT_HIPROC  0x7FFFFFFF
 
-typedef unsigned int  Elf32_Addr;
+// Segment flags
+#define PF_X               0x1
+#define PF_W               0x2
+#define PF_R               0x4
+#define PF_MASKPROC 0xF0000000
+
+typedef unsigned int   Elf32_Addr;
 typedef unsigned short Elf32_Half;
-typedef unsigned int  Elf32_Off;
-typedef signed   int  Elf32_Sword;
-typedef unsigned int  Elf32_Word;
+typedef unsigned int   Elf32_Off;
+typedef signed   int   Elf32_Sword;
+typedef unsigned int   Elf32_Word;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // ELF file header
@@ -188,7 +194,6 @@ private:
 
 public:
     ElfReader(void *ptr);
-    ~ElfReader() { }
 
     u32 Read32(int off) const { return base32[off >> 2]; }
 
@@ -197,7 +202,7 @@ public:
     ElfMachine GetMachine() const { return (ElfMachine)(header->e_machine); }
     u32 GetEntryPoint() const { return entryPoint; }
     u32 GetFlags() const { return (u32)(header->e_flags); }
-    bool LoadInto(u32 vaddr);
+    SharedPtr<CodeSet> LoadInto(u32 vaddr);
     bool LoadSymbols();
 
     int GetNumSegments() const { return (int)(header->e_phnum); }
@@ -219,21 +224,21 @@ public:
         return GetPtr(segments[segment].p_offset);
     }
     u32 GetSectionAddr(SectionID section) const { return sectionAddrs[section]; }
-    int GetSectionSize(SectionID section) const { return sections[section].sh_size; }
+    unsigned int GetSectionSize(SectionID section) const { return sections[section].sh_size; }
     SectionID GetSectionByName(const char *name, int firstSection = 0) const; //-1 for not found
 
-    bool DidRelocate() {
+    bool DidRelocate() const {
         return relocate;
     }
 };
 
 ElfReader::ElfReader(void *ptr) {
     base = (char*)ptr;
-    base32 = (u32 *)ptr;
+    base32 = (u32*)ptr;
     header = (Elf32_Ehdr*)ptr;
 
-    segments = (Elf32_Phdr *)(base + header->e_phoff);
-    sections = (Elf32_Shdr *)(base + header->e_shoff);
+    segments = (Elf32_Phdr*)(base + header->e_phoff);
+    sections = (Elf32_Shdr*)(base + header->e_shoff);
 
     entryPoint = header->e_entry;
 
@@ -245,7 +250,7 @@ const char *ElfReader::GetSectionName(int section) const {
         return nullptr;
 
     int name_offset = sections[section].sh_name;
-    char *ptr = (char*)GetSectionDataPtr(header->e_shstrndx);
+    const char* ptr = (char*)GetSectionDataPtr(header->e_shstrndx);
 
     if (ptr)
         return ptr + name_offset;
@@ -253,38 +258,78 @@ const char *ElfReader::GetSectionName(int section) const {
     return nullptr;
 }
 
-bool ElfReader::LoadInto(u32 vaddr) {
-    DEBUG_LOG(MASTER_LOG, "String section: %i", header->e_shstrndx);
+SharedPtr<CodeSet> ElfReader::LoadInto(u32 vaddr) {
+    LOG_DEBUG(Loader, "String section: %i", header->e_shstrndx);
 
     // Should we relocate?
     relocate = (header->e_type != ET_EXEC);
 
     if (relocate) {
-        DEBUG_LOG(MASTER_LOG, "Relocatable module");
+        LOG_DEBUG(Loader, "Relocatable module");
         entryPoint += vaddr;
     } else {
-        DEBUG_LOG(MASTER_LOG, "Prerelocated executable");
+        LOG_DEBUG(Loader, "Prerelocated executable");
     }
-    INFO_LOG(MASTER_LOG, "%i segments:", header->e_phnum);
+    LOG_DEBUG(Loader, "%i segments:", header->e_phnum);
 
     // First pass : Get the bits into RAM
-    u32 segment_addr[32];
     u32 base_addr = relocate ? vaddr : 0;
 
-    for (int i = 0; i < header->e_phnum; i++) {
-        Elf32_Phdr *p = segments + i;
-        INFO_LOG(MASTER_LOG, "Type: %i Vaddr: %08x Filesz: %i Memsz: %i ", p->p_type, p->p_vaddr, 
-            p->p_filesz, p->p_memsz);
-
+    u32 total_image_size = 0;
+    for (unsigned int i = 0; i < header->e_phnum; ++i) {
+        Elf32_Phdr* p = &segments[i];
         if (p->p_type == PT_LOAD) {
-            segment_addr[i] = base_addr + p->p_vaddr;
-            memcpy(Memory::GetPointer(segment_addr[i]), GetSegmentPtr(i), p->p_filesz);
-            INFO_LOG(MASTER_LOG, "Loadable Segment Copied to %08x, size %08x", segment_addr[i], 
-                p->p_memsz);
+            total_image_size += (p->p_memsz + 0xFFF) & ~0xFFF;
         }
     }
-    INFO_LOG(MASTER_LOG, "Done loading.");
-    return true;
+
+    std::vector<u8> program_image(total_image_size);
+    size_t current_image_position = 0;
+
+    SharedPtr<CodeSet> codeset = CodeSet::Create("", 0);
+
+    for (unsigned int i = 0; i < header->e_phnum; ++i) {
+        Elf32_Phdr* p = &segments[i];
+        LOG_DEBUG(Loader, "Type: %i Vaddr: %08X Filesz: %8X Memsz: %8X ", p->p_type, p->p_vaddr,
+                  p->p_filesz, p->p_memsz);
+
+        if (p->p_type == PT_LOAD) {
+            CodeSet::Segment* codeset_segment;
+            u32 permission_flags = p->p_flags & (PF_R | PF_W | PF_X);
+            if (permission_flags == (PF_R | PF_X)) {
+                codeset_segment = &codeset->code;
+            } else if (permission_flags == (PF_R)) {
+                codeset_segment = &codeset->rodata;
+            } else if (permission_flags == (PF_R | PF_W)) {
+                codeset_segment = &codeset->data;
+            } else {
+                LOG_ERROR(Loader, "Unexpected ELF PT_LOAD segment id %u with flags %X", i, p->p_flags);
+                continue;
+            }
+
+            if (codeset_segment->size != 0) {
+                LOG_ERROR(Loader, "ELF has more than one segment of the same type. Skipping extra segment (id %i)", i);
+                continue;
+            }
+
+            u32 segment_addr = base_addr + p->p_vaddr;
+            u32 aligned_size = (p->p_memsz + 0xFFF) & ~0xFFF;
+
+            codeset_segment->offset = current_image_position;
+            codeset_segment->addr = segment_addr;
+            codeset_segment->size = aligned_size;
+
+            memcpy(&program_image[current_image_position], GetSegmentPtr(i), p->p_filesz);
+            current_image_position += aligned_size;
+        }
+    }
+
+    codeset->entrypoint = base_addr + header->e_entry;
+    codeset->memory = std::make_shared<std::vector<u8>>(std::move(program_image));
+
+    LOG_DEBUG(Loader, "Done loading.");
+
+    return codeset;
 }
 
 SectionID ElfReader::GetSectionByName(const char *name, int firstSection) const {
@@ -305,9 +350,9 @@ bool ElfReader::LoadSymbols() {
         const char *stringBase = (const char *)GetSectionDataPtr(stringSection);
 
         //We have a symbol table!
-        Elf32_Sym *symtab = (Elf32_Sym *)(GetSectionDataPtr(sec));
-        int numSymbols = sections[sec].sh_size / sizeof(Elf32_Sym);
-        for (int sym = 0; sym < numSymbols; sym++) {
+        Elf32_Sym* symtab = (Elf32_Sym *)(GetSectionDataPtr(sec));
+        unsigned int numSymbols = sections[sec].sh_size / sizeof(Elf32_Sym);
+        for (unsigned sym = 0; sym < numSymbols; sym++) {
             int size = symtab[sym].st_size;
             if (size == 0)
                 continue;
@@ -330,40 +375,47 @@ bool ElfReader::LoadSymbols() {
 
 namespace Loader {
 
-/// AppLoader_ELF constructor
-AppLoader_ELF::AppLoader_ELF(const std::string& filename) : is_loaded(false) {
-    this->filename = filename;
+FileType AppLoader_ELF::IdentifyType(FileUtil::IOFile& file) {
+    u32 magic;
+    file.Seek(0, SEEK_SET);
+    if (1 != file.ReadArray<u32>(&magic, 1))
+        return FileType::Error;
+
+    if (MakeMagic('\x7f', 'E', 'L', 'F') == magic)
+        return FileType::ELF;
+
+    return FileType::Error;
 }
 
-/// AppLoader_NCCH destructor
-AppLoader_ELF::~AppLoader_ELF() {
-}
-
-/**
- * Loads an NCCH file (e.g. from a CCI, or the first NCCH in a CXI)
- * @param error_string Pointer to string to put error message if an error has occurred
- * @todo Move NCSD parsing out of here and create a separate function for loading these
- * @return True on success, otherwise false
- */
 ResultStatus AppLoader_ELF::Load() {
-    INFO_LOG(LOADER, "Loading ELF file %s...", filename.c_str());
-
     if (is_loaded)
         return ResultStatus::ErrorAlreadyLoaded;
 
-    FileUtil::IOFile file(filename, "rb");
-
-    if (file.IsOpen()) {
-        u32 size = (u32)file.GetSize();
-        std::unique_ptr<u8[]> buffer(new u8[size]);
-        file.ReadBytes(&buffer[0], size);
-
-        ElfReader elf_reader(&buffer[0]);
-        elf_reader.LoadInto(0x00100000);
-        Kernel::LoadExec(elf_reader.GetEntryPoint());
-    } else {
+    if (!file.IsOpen())
         return ResultStatus::Error;
-    }
+
+    // Reset read pointer in case this file has been read before.
+    file.Seek(0, SEEK_SET);
+
+    size_t size = file.GetSize();
+    std::unique_ptr<u8[]> buffer(new u8[size]);
+    if (file.ReadBytes(&buffer[0], size) != size)
+        return ResultStatus::Error;
+
+    ElfReader elf_reader(&buffer[0]);
+    SharedPtr<CodeSet> codeset = elf_reader.LoadInto(Memory::PROCESS_IMAGE_VADDR);
+    codeset->name = filename;
+
+    Kernel::g_current_process = Kernel::Process::Create(std::move(codeset));
+    Kernel::g_current_process->svc_access_mask.set();
+    Kernel::g_current_process->address_mappings = default_address_mappings;
+
+    // Attach the default resource limit (APPLICATION) to the process
+    Kernel::g_current_process->resource_limit = Kernel::ResourceLimit::GetForCategory(Kernel::ResourceLimitCategory::APPLICATION);
+
+    Kernel::g_current_process->Run(48, Kernel::DEFAULT_STACK_SIZE);
+
+    is_loaded = true;
     return ResultStatus::Success;
 }
 

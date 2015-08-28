@@ -1,6 +1,6 @@
 // Copyright 2014 Citra Emulator Project
-// Licensed under GPLv2
-// Refer to the license.txt file included.  
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
 
 #pragma once
 
@@ -18,21 +18,6 @@ struct MemoryInfo {
 
 struct PageInfo {
     u32 flags;
-};
-
-struct ThreadContext {
-    u32 cpu_registers[13];
-    u32 sp;
-    u32 lr;
-    u32 pc;
-    u32 cpsr;
-    u32 fpu_registers[32];
-    u32 fpscr;
-    u32 fpexc;
-
-    // These are not part of native ThreadContext, but needed by emu
-    u32 reg_15;
-    u32 mode;
 };
 
 enum ResetType {
@@ -56,6 +41,6 @@ enum ArbitrationType {
 
 namespace SVC {
 
-void Register();
+void CallSVC(u32 immediate);
 
 } // namespace

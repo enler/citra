@@ -1,5 +1,5 @@
-// Copyright 2013 Dolphin Emulator Project
-// Licensed under GPLv2
+// Copyright 2013 Dolphin Emulator Project / 2014 Citra Emulator Project
+// Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
 #pragma once
@@ -7,7 +7,7 @@
 #include <vector>
 #include <string>
 
-#include "common/common.h"
+#include "common/common_types.h"
 
 class DebugInterface;
 
@@ -56,8 +56,8 @@ public:
     void AddFromStrings(const TBreakPointsStr& bps);
 
     // is address breakpoint
-    bool IsAddressBreakPoint(u32 iAddress);
-    bool IsTempBreakPoint(u32 iAddress);
+    bool IsAddressBreakPoint(u32 iAddress) const;
+    bool IsTempBreakPoint(u32 iAddress) const;
 
     // Add BreakPoint
     void Add(u32 em_address, bool temp=false);
